@@ -1,0 +1,16 @@
+{
+  "name": "@workspace/sync-yjs",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "dependencies": {
+    "yjs": "^13.6.8",
+    "y-indexeddb": "^9.0.11",
+    "y-webrtc": "^10.3.0",
+    "@workspace/domain": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}

@@ -1,0 +1,136 @@
+'use client'
+
+import { useEffect, useMemo, useState } from 'react'
+
+interface ActionPopupProps {
+  left: number
+  top: number
+  tags: string[]
+  selectionColor: string
+  interactive?: boolean
+  onAutoExcerpt: () => void
+  onComment: () => void
+  onBookmark: () => void
+  onTag: (tags: string[]) => void
+  onCopy: () => void
+  onAddDefinedTerm: () => void
+  onColorChange: (nextColor: string) => void
+}
+
+const SWATCHES = ['#ff6b6b', '#2ecc71', '#5d5df6', '#ffd400', '#db38ff', '#00b8d9']
+
+export function ActionPopup({
+  left,
+  top,
+  tags,
+  selectionColor,
+  interactive = true,
+  onAutoExcerpt,
+  onComment,
+  onBookmark,
+  onTag,
+  onCopy,
+  onAddDefinedTerm,
+  onColorChange
+}: ActionPopupProps) {
+  const [tagDraft, setTagDraft] = useState(tags.join(', '))
+  const [moreOpen, setMoreOpen] = useState(false)
+
+  useEffect(() => {
+    setTagDraft(tags.join(', '))
+  }, [tags])
+
+  const parsedTags = useMemo(
+    () =>
+      tagDraft
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean),
+    [tagDraft]
+  )
+
+  return (
+    <div
+      className="selection-action-popup"
+      style={{
+        left,
+        top,
+        borderColor: `${selectionColor}55`,
+        boxShadow: `0 22px 45px ${selectionColor}22`,
+        pointerEvents: interactive ? 'auto' : 'none'
+      }}
+    >
+      <div className="selection-action-row">
+        <button
+          className="selection-action-pill selection-action-pill-primary"
+          type="button"
+          style={{ background: selectionColor }}
+          onClick={onAutoExcerpt}
+        >
+          Auto Excerpt
+        </button>
+        <button className="selection-action-pill" type="button" onClick={onComment}>
+          Comment
+        </button>
+        <button className="selection-action-pill" type="button" onClick={onBookmark}>
+          Bookmark
+        </button>
+        <button
+          className="selection-action-pill"
+          type="button"
+          onClick={() => {
+            onTag(parsedTags)
+          }}
+        >
+          Tag
+        </button>
+        <div className="selection-action-more">
+          <button
+            className="selection-action-pill"
+            type="button"
+            onClick={() => setMoreOpen((current) => !current)}
+          >
+            ...
+          </button>
+          {moreOpen ? (
+            <div className="selection-action-menu">
+              <button className="selection-action-menu-item" type="button" onClick={onCopy}>
+                Copy
+              </button>
+              <button className="selection-action-menu-item" type="button" onClick={onAddDefinedTerm}>
+                Add Defined Term
+              </button>
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="selection-action-row selection-action-row-secondary">
+        <div className="selection-action-swatches">
+          {SWATCHES.map((swatch) => (
+            <button
+              key={swatch}
+              type="button"
+              className="selection-action-swatch"
+              style={{
+                background: swatch,
+                boxShadow: selectionColor === swatch ? '0 0 0 3px rgba(53, 94, 153, 0.22)' : 'none'
+              }}
+              onClick={() => onColorChange(swatch)}
+            />
+          ))}
+        </div>
+
+        <label className="selection-action-tags">
+          <span>Tags</span>
+          <input
+            value={tagDraft}
+            onChange={(event) => setTagDraft(event.target.value)}
+            onBlur={() => onTag(parsedTags)}
+            placeholder="market, idea"
+          />
+        </label>
+      </div>
+    </div>
+  )
+}

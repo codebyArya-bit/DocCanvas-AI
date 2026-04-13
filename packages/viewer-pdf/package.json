@@ -1,0 +1,16 @@
+{
+  "name": "@workspace/viewer-pdf",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "dependencies": {
+    "pdfjs-dist": "^4.0.0",
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0",
+    "@workspace/domain": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}
