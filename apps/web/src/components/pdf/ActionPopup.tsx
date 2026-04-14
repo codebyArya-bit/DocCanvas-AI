@@ -96,111 +96,113 @@ export function ActionPopup({
         pointerEvents: interactive ? 'auto' : 'none'
       }}
     >
-      <div className="selection-action-row">
-        <button
-          className="selection-action-pill selection-action-pill-primary"
-          type="button"
-          style={{ background: selectionColor }}
-          onClick={onAutoExcerpt}
-        >
-          Auto Excerpt
-        </button>
-        <button className="selection-action-pill" type="button" onClick={onComment}>
-          Comment
-        </button>
-        <button className="selection-action-pill" type="button" onClick={onBookmark}>
-          {bookmarked ? 'Remove Bookmark' : 'Bookmark'}
-        </button>
-        <button
-          className="selection-action-pill"
-          type="button"
-          onClick={() => {
-            onTag(parsedTags)
-          }}
-        >
-          Tag
-        </button>
-        <button className="selection-action-pill" type="button" onClick={onClearSelection}>
-          Clear
-        </button>
-        <div className="selection-action-more">
+      <div className="selection-action-content">
+        <div className="selection-action-row">
+          <button
+            className="selection-action-pill selection-action-pill-primary"
+            type="button"
+            style={{ background: selectionColor }}
+            onClick={onAutoExcerpt}
+          >
+            Auto Excerpt
+          </button>
+          <button className="selection-action-pill" type="button" onClick={onComment}>
+            Comment
+          </button>
+          <button className="selection-action-pill" type="button" onClick={onBookmark}>
+            {bookmarked ? 'Remove Bookmark' : 'Bookmark'}
+          </button>
           <button
             className="selection-action-pill"
             type="button"
-            onClick={() => setMoreOpen((current) => !current)}
+            onClick={() => {
+              onTag(parsedTags)
+            }}
           >
-            ...
+            Tag
           </button>
-          {moreOpen ? (
-            <div className="selection-action-menu">
-              <button className="selection-action-menu-item" type="button" onClick={onCopy}>
-                Copy
-              </button>
-              <button
-                className="selection-action-menu-item"
-                type="button"
-                onClick={() => {
-                  onTag([])
-                  setMoreOpen(false)
-                }}
-              >
-                Clear Tags
-              </button>
-              <button className="selection-action-menu-item" type="button" onClick={onAddDefinedTerm}>
-                Add Defined Term
-              </button>
-            </div>
-          ) : null}
-        </div>
-      </div>
-
-      <div className="selection-action-row selection-action-row-secondary">
-        <div className="selection-action-swatches">
-          {SWATCHES.map((swatch) => (
+          <button className="selection-action-pill" type="button" onClick={onClearSelection}>
+            Clear
+          </button>
+          <div className="selection-action-more">
             <button
-              key={swatch}
+              className="selection-action-pill"
               type="button"
-              className="selection-action-swatch"
-              style={{
-                background: swatch,
-                boxShadow: selectionColor === swatch ? '0 0 0 3px rgba(53, 94, 153, 0.22)' : 'none'
-              }}
-              onClick={() => onColorChange(swatch)}
-            />
-          ))}
-        </div>
-
-        <label className="selection-action-tags">
-          <span>Tags</span>
-          <input
-            value={tagDraft}
-            onChange={(event) => setTagDraft(event.target.value)}
-            onBlur={() => onTag(parsedTags)}
-            placeholder="market, idea"
-          />
-        </label>
-      </div>
-
-      {normalizedTags.length > 0 ? (
-        <div className="selection-action-row selection-action-row-secondary" style={{ paddingTop: 0 }}>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-            {normalizedTags.map((tag) => (
-              <button
-                key={tag}
-                type="button"
-                className="selection-action-pill"
-                onClick={() => {
-                  const next = normalizedTags.filter((t) => t !== tag)
-                  setTagDraft(next.join(', '))
-                  onTag(next)
-                }}
-              >
-                {tag} ×
-              </button>
-            ))}
+              onClick={() => setMoreOpen((current) => !current)}
+            >
+              ...
+            </button>
+            {moreOpen ? (
+              <div className="selection-action-menu">
+                <button className="selection-action-menu-item" type="button" onClick={onCopy}>
+                  Copy
+                </button>
+                <button
+                  className="selection-action-menu-item"
+                  type="button"
+                  onClick={() => {
+                    onTag([])
+                    setMoreOpen(false)
+                  }}
+                >
+                  Clear Tags
+                </button>
+                <button className="selection-action-menu-item" type="button" onClick={onAddDefinedTerm}>
+                  Add Defined Term
+                </button>
+              </div>
+            ) : null}
           </div>
         </div>
-      ) : null}
+
+        <div className="selection-action-row selection-action-row-secondary">
+          <div className="selection-action-swatches">
+            {SWATCHES.map((swatch) => (
+              <button
+                key={swatch}
+                type="button"
+                className="selection-action-swatch"
+                style={{
+                  background: swatch,
+                  boxShadow: selectionColor === swatch ? '0 0 0 3px rgba(53, 94, 153, 0.22)' : 'none'
+                }}
+                onClick={() => onColorChange(swatch)}
+              />
+            ))}
+          </div>
+
+          <label className="selection-action-tags">
+            <span>Tags</span>
+            <input
+              value={tagDraft}
+              onChange={(event) => setTagDraft(event.target.value)}
+              onBlur={() => onTag(parsedTags)}
+              placeholder="market, idea"
+            />
+          </label>
+        </div>
+
+        {normalizedTags.length > 0 ? (
+          <div className="selection-action-row selection-action-row-secondary" style={{ paddingTop: 0 }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              {normalizedTags.map((tag) => (
+                <button
+                  key={tag}
+                  type="button"
+                  className="selection-action-pill"
+                  onClick={() => {
+                    const next = normalizedTags.filter((t) => t !== tag)
+                    setTagDraft(next.join(', '))
+                    onTag(next)
+                  }}
+                >
+                  {tag} ×
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </div>
     </div>
   )
 }

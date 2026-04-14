@@ -76,10 +76,16 @@ button, input, textarea {
   box-shadow: 0 22px 45px rgba(33, 41, 54, 0.2);
   backdrop-filter: blur(16px);
   animation: selection-fade-up 160ms ease-out;
+  overflow: visible;
+  touch-action: manipulation;
+}
+
+.selection-action-content {
   max-height: min(48vh, 420px);
   overflow: auto;
   overscroll-behavior: contain;
-  touch-action: manipulation;
+  -webkit-overflow-scrolling: touch;
+  padding-right: 2px;
 }
 
 .selection-action-row {
@@ -118,6 +124,7 @@ button, input, textarea {
 
 .selection-action-more {
   position: relative;
+  z-index: 5;
 }
 
 .selection-action-menu {
@@ -130,6 +137,22 @@ button, input, textarea {
   border-radius: 14px;
   box-shadow: 0 12px 24px rgba(33, 41, 54, 0.16);
   overflow: hidden;
+  z-index: 30;
+  transform-origin: top right;
+  animation: selection-menu-pop 140ms ease-out;
+}
+
+.selection-action-menu::before {
+  content: '';
+  position: absolute;
+  right: 14px;
+  top: -6px;
+  width: 12px;
+  height: 12px;
+  background: white;
+  border-left: 1px solid rgba(125, 142, 171, 0.26);
+  border-top: 1px solid rgba(125, 142, 171, 0.26);
+  transform: rotate(45deg);
 }
 
 .selection-action-menu-item {
@@ -515,6 +538,18 @@ button, input, textarea {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@keyframes selection-menu-pop {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
   }
 }
 

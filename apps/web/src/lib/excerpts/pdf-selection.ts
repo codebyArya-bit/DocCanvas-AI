@@ -451,7 +451,10 @@ export function restorePdfSelectionFromAnchor(page: HTMLElement, anchor: Pick<Pa
 
 export function resolveAnchorClientRects(
   page: HTMLElement,
-  anchor: Pick<PageAnchor, 'startSpanIndex' | 'startOffset' | 'endSpanIndex' | 'endOffset' | 'boundingBox' | 'quadPoints'>
+  anchor: Pick<
+    PageAnchor,
+    'startSpanIndex' | 'startOffset' | 'endSpanIndex' | 'endOffset' | 'boundingBox' | 'quadPoints' | 'viewportScale'
+  >
 ) {
   const range = buildRangeFromAnchor(page, anchor)
   if (range) {
@@ -460,6 +463,9 @@ export function resolveAnchorClientRects(
       return rects
     }
   }
+
+  const currentViewportScale = Number(page.dataset.viewportScale ?? '1')
+  const ratio = currentViewportScale / (anchor.viewportScale || currentViewportScale)
 
   if (anchor.quadPoints?.length) {
     const pageRect = page.getBoundingClientRect()
@@ -470,10 +476,10 @@ export function resolveAnchorClientRects(
         continue
       }
 
-      const left = Math.min(quad[0], quad[2], quad[4], quad[6])
-      const right = Math.max(quad[0], quad[2], quad[4], quad[6])
-      const top = Math.min(quad[1], quad[3], quad[5], quad[7])
-      const bottom = Math.max(quad[1], quad[3], quad[5], quad[7])
+      const left = Math.min(quad[0], quad[2], quad[4], quad[6]) * ratio
+      const right = Math.max(quad[0], quad[2], quad[4], quad[6]) * ratio
+      const top = Math.min(quad[1], quad[3], quad[5], quad[7]) * ratio
+      const bottom = Math.max(quad[1], quad[3], quad[5], quad[7]) * ratio
       rects.push(new DOMRect(pageRect.left + left, pageRect.top + top, right - left, bottom - top))
     }
 
@@ -485,10 +491,10 @@ export function resolveAnchorClientRects(
   const pageRect = page.getBoundingClientRect()
   return [
     new DOMRect(
-      pageRect.left + anchor.boundingBox.x,
-      pageRect.top + anchor.boundingBox.y,
-      anchor.boundingBox.width,
-      anchor.boundingBox.height
+      pageRect.left + anchor.boundingBox.x * ratio,
+      pageRect.top + anchor.boundingBox.y * ratio,
+      anchor.boundingBox.width * ratio,
+      anchor.boundingBox.height * ratio
     )
   ]
 }

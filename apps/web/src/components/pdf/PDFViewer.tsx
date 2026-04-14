@@ -150,6 +150,7 @@ export interface HighlightDescriptor {
   pageNumber: number
   boundingBox: PageAnchor['boundingBox']
   quadPoints?: number[]
+  viewportScale?: number
   selectionColor: string
   tags?: string[]
 }
@@ -217,6 +218,9 @@ export function PDFViewer({
   const [viewerError, setViewerError] = useState<string | null>(null)
   const [popupState, setPopupState] = useState<SelectionPopupState | null>(null)
   const [pageRenderTick, setPageRenderTick] = useState(0)
+  const [zoom, setZoom] = useState(1)
+  const baseViewportScale = 1.35
+  const viewportScale = useMemo(() => Number((baseViewportScale * zoom).toFixed(3)), [zoom])
   const handlePageRendered = useCallback(() => {
     setPageRenderTick((current) => current + 1)
   }, [])
@@ -440,6 +444,56 @@ export function PDFViewer({
     return type === 'application/pdf' || name.endsWith('.pdf')
   }, [])
 
+  const clampZoom = useCallback((next: number) => Math.max(0.6, Math.min(3, Number(next.toFixed(2)))), [])
+  const zoomIn = useCallback(() => setZoom((current) => clampZoom(current + 0.1)), [clampZoom])
+  const zoomOut = useCallback(() => setZoom((current) => clampZoom(current - 0.1)), [clampZoom])
+  const zoomReset = useCallback(() => setZoom(1), [])
+
+  useEffect(() => {
+    const root = rootRef.current
+    if (!root) {
+      return
+    }
+
+    const onWheel = (event: WheelEvent) => {
+      if (!event.ctrlKey && !event.metaKey) {
+        return
+      }
+
+      event.preventDefault()
+      if (event.deltaY < 0) {
+        setZoom((current) => clampZoom(current + 0.1))
+      } else if (event.deltaY > 0) {
+        setZoom((current) => clampZoom(current - 0.1))
+      }
+    }
+
+    root.addEventListener('wheel', onWheel, { passive: false })
+    return () => root.removeEventListener('wheel', onWheel as any)
+  }, [clampZoom])
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!event.ctrlKey && !event.metaKey) {
+        return
+      }
+
+      if (event.key === '+' || event.key === '=') {
+        event.preventDefault()
+        zoomIn()
+      } else if (event.key === '-') {
+        event.preventDefault()
+        zoomOut()
+      } else if (event.key === '0') {
+        event.preventDefault()
+        zoomReset()
+      }
+    }
+
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [zoomIn, zoomOut, zoomReset])
+
   async function importPdfFile(file: File) {
     let loadingTask: any = null
 
@@ -526,6 +580,19 @@ export function PDFViewer({
           </button>
           {documentState ? <span className="document-meta">{documentState.record.title}</span> : null}
           {documentState && viewerError ? <span className="document-import-error">{viewerError}</span> : null}
+          {documentState && pdfDocument ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <button className="document-button" type="button" onClick={zoomOut}>
+                -
+              </button>
+              <button className="document-button" type="button" onClick={zoomReset}>
+                {Math.round(zoom * 100)}%
+              </button>
+              <button className="document-button" type="button" onClick={zoomIn}>
+                +
+              </button>
+            </div>
+          ) : null}
         </div>
         <input
           ref={fileInputRef}
@@ -628,6 +695,7 @@ export function PDFViewer({
                 registerPage={registerPage}
                 onRendered={handlePageRendered}
                 onRenderError={handlePageRenderError}
+                viewportScale={viewportScale}
               />
             ))}
 
@@ -664,7 +732,8 @@ function PdfPage({
   registerCanvas,
   registerPage,
   onRendered,
-  onRenderError
+  onRenderError,
+  viewportScale
 }: {
   pdfDocument: any
   pageNumber: number
@@ -679,6 +748,7 @@ function PdfPage({
   registerPage: (pageNumber: number, page: HTMLDivElement | null) => void
   onRendered: () => void
   onRenderError: (pageNumber: number, error: unknown) => void
+  viewportScale: number
 }) {
   const HIGHLIGHT_CLICK_DELAY_MS = 220
   const pageRef = useRef<HTMLDivElement>(null)
@@ -874,7 +944,7 @@ function PdfPage({
           return
         }
 
-        const viewport = page.getViewport({ scale: 1.35 })
+        const viewport = page.getViewport({ scale: viewportScale })
         const ratio = window.devicePixelRatio || 1
         const context = currentCanvas.getContext('2d')
         if (!context) {
@@ -949,8 +1019,8 @@ function PdfPage({
       ref={pageRef}
       className="page"
       data-page-number={pageNumber}
-      data-viewport-scale="1.35"
-      style={{ '--total-scale-factor': '1.35' } as CSSProperties}
+      data-viewport-scale={String(viewportScale)}
+      style={{ '--total-scale-factor': String(viewportScale) } as CSSProperties}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
@@ -963,13 +1033,14 @@ function PdfPage({
             return null
           }
 
+          const ratio = viewportScale / (anchor.viewportScale || viewportScale)
           return (
             <button
               key={bookmark.id}
               type="button"
               className="page-bookmark-indicator"
               style={{
-                top: anchor.boundingBox.y,
+                top: anchor.boundingBox.y * ratio,
                 background: bookmark.selectionColor
               }}
               onClick={() => onOpenAnchor(bookmark.sourceAnchorId)}
@@ -985,10 +1056,10 @@ function PdfPage({
           type="button"
           className="document-highlight-button"
           style={{
-            left: highlight.boundingBox.x,
-            top: highlight.boundingBox.y,
-            width: highlight.boundingBox.width,
-            height: highlight.boundingBox.height,
+            left: highlight.boundingBox.x * (viewportScale / (highlight.viewportScale || viewportScale)),
+            top: highlight.boundingBox.y * (viewportScale / (highlight.viewportScale || viewportScale)),
+            width: highlight.boundingBox.width * (viewportScale / (highlight.viewportScale || viewportScale)),
+            height: highlight.boundingBox.height * (viewportScale / (highlight.viewportScale || viewportScale)),
             background: `${highlight.selectionColor}2d`,
             borderColor: highlight.selectionColor,
             pointerEvents: 'none'
@@ -999,10 +1070,10 @@ function PdfPage({
         <div
           className="document-focus-overlay"
           style={{
-            left: focusedAnchor.boundingBox.x,
-            top: focusedAnchor.boundingBox.y,
-            width: focusedAnchor.boundingBox.width,
-            height: focusedAnchor.boundingBox.height,
+            left: focusedAnchor.boundingBox.x * (viewportScale / (focusedAnchor.viewportScale || viewportScale)),
+            top: focusedAnchor.boundingBox.y * (viewportScale / (focusedAnchor.viewportScale || viewportScale)),
+            width: focusedAnchor.boundingBox.width * (viewportScale / (focusedAnchor.viewportScale || viewportScale)),
+            height: focusedAnchor.boundingBox.height * (viewportScale / (focusedAnchor.viewportScale || viewportScale)),
             background: `${focusedColor}25`,
             borderColor: focusedColor,
             pointerEvents: 'none'

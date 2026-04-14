@@ -672,6 +672,7 @@ export function WorkspaceShell() {
         pageNumber: anchor.pageNumber,
         boundingBox: anchor.boundingBox,
         quadPoints: anchor.quadPoints,
+        viewportScale: anchor.viewportScale,
         selectionColor: resolveAnchorColor(anchor.id),
         tags: anchor.tags
       })),
