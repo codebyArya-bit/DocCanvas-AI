@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Bookmark, CanvasEdge, CanvasNode, Excerpt, Note, PageAnchor, TextStyle } from '@workspace/domain'
 import { buildAnchorLink, buildBookmark, buildExcerpt, buildPageAnchor, type SelectionArtifactInput } from '../lib/excerpts/pdf-selection'
 import { loadWorkspaceState, persistWorkspaceState } from '../lib/indexeddb/local-cache'
@@ -931,6 +931,40 @@ export function WorkspaceShell() {
     }
   }, [activeNode, workspaceRect])
 
+  const focusActiveNodeEditor = useCallback(() => {
+    if (!activeNodeId || !workspacePaneRef.current) {
+      return
+    }
+
+    const editor = workspacePaneRef.current.querySelector<HTMLElement>(
+      `[data-node-id="${activeNodeId}"] [data-node-editor="true"]`
+    )
+    if (!editor) {
+      return
+    }
+
+    editor.focus()
+    const selection = window.getSelection()
+    if (!selection) {
+      return
+    }
+
+    const range = document.createRange()
+    range.selectNodeContents(editor)
+    range.collapse(false)
+    selection.removeAllRanges()
+    selection.addRange(range)
+  }, [activeNodeId])
+
+  const handleEditActiveNode = useCallback(() => {
+    if (!activeNode) {
+      return
+    }
+
+    setActiveNodeId(activeNode.id)
+    focusActiveNodeEditor()
+  }, [activeNode, focusActiveNodeEditor])
+
   return (
     <main ref={shellRef} className="workspace-shell">
       <header className="workspace-header">
@@ -1031,7 +1065,33 @@ export function WorkspaceShell() {
         />
       </section>
 
-      <section ref={workspacePaneRef} className="workspace-panel workspace-pane">
+      <section
+        ref={workspacePaneRef}
+        className="workspace-panel workspace-pane"
+        onPointerDownCapture={(event) => {
+          const target = event.target as HTMLElement | null
+          if (!target || target.closest('.workspace-text-toolbar')) {
+            return
+          }
+
+          const nodeElement = target.closest<HTMLElement>('.workspace-node')
+          if (!nodeElement) {
+            return
+          }
+
+          const nodeId = nodeElement.dataset.nodeId
+          if (!nodeId) {
+            return
+          }
+
+          const node = canvasNodes.find((entry) => entry.id === nodeId)
+          if (!node) {
+            return
+          }
+
+          focusBoth(node.sourceAnchorId ?? null, node.id)
+        }}
+      >
         <WorkspaceCanvas
           paneRef={workspacePaneRef}
           canvasNodes={canvasNodes}
@@ -1068,13 +1128,13 @@ export function WorkspaceShell() {
           left={activeToolbarPosition.left}
           top={activeToolbarPosition.top}
           onStyleChange={(stylePatch) => {
-            if (!activeNodeId) {
+            if (!activeNode) {
               return
             }
 
             setCanvasNodes((current) =>
               current.map((node) =>
-                node.id === activeNodeId
+                node.id === activeNode.id
                   ? {
                       ...node,
                       textStyle: {
@@ -1089,10 +1149,10 @@ export function WorkspaceShell() {
             )
           }}
           onColorChange={(color) => {
-            if (!activeNodeId) {
+            if (!activeNode) {
               return
             }
-            applyNodeLinkedUpdates(activeNodeId, { selectionColor: color })
+            applyNodeLinkedUpdates(activeNode.id, { selectionColor: color })
           }}
           onCopy={() => {
             if (activeNode?.text) {
@@ -1100,14 +1160,14 @@ export function WorkspaceShell() {
             }
           }}
           onCut={() => {
-            if (!activeNodeId) {
+            if (!activeNode) {
               return
             }
 
             if (activeNode?.text) {
               void navigator.clipboard.writeText(activeNode.text)
             }
-            removeNodeAndCleanup(activeNodeId)
+            removeNodeAndCleanup(activeNode.id)
           }}
           onCopyLink={() => {
             if (!activeNode?.sourceAnchorId || !documentState) {
@@ -1122,10 +1182,10 @@ export function WorkspaceShell() {
             void navigator.clipboard.writeText(buildAnchorLink(WORKSPACE_ID, documentState.record.id, anchor))
           }}
           onDelete={() => {
-            if (!activeNodeId) {
+            if (!activeNode) {
               return
             }
-            removeNodeAndCleanup(activeNodeId)
+            removeNodeAndCleanup(activeNode.id)
           }}
           onPromoteChild={() => {
             if (!activeNode) {
@@ -1167,15 +1227,13 @@ export function WorkspaceShell() {
             createCommentNode(relatedExcerpt, anchor, activeNode.y / Math.max(1, workspaceRect?.height ?? 720))
           }}
           onEdit={() => {
-            if (activeNodeId) {
-              setActiveNodeId(activeNodeId)
-            }
+            handleEditActiveNode()
           }}
           onTagsChange={(tags) => {
-            if (!activeNodeId) {
+            if (!activeNode) {
               return
             }
-            applyNodeLinkedUpdates(activeNodeId, { tags })
+            applyNodeLinkedUpdates(activeNode.id, { tags })
           }}
         />
       </section>

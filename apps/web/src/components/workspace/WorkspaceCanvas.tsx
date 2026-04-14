@@ -45,6 +45,13 @@ export function WorkspaceCanvas({
     offsetX: number
     offsetY: number
   } | null>(null)
+  const pressRef = useRef<{
+    nodeId: string
+    offsetX: number
+    offsetY: number
+    startClientX: number
+    startClientY: number
+  } | null>(null)
   const resizeRef = useRef<{
     nodeId: string
     startX: number
@@ -120,22 +127,37 @@ export function WorkspaceCanvas({
         return
       }
 
-      if (!drag) {
+      const press = pressRef.current
+      if (!drag && press) {
+        const deltaX = event.clientX - press.startClientX
+        const deltaY = event.clientY - press.startClientY
+        if (Math.hypot(deltaX, deltaY) > 5) {
+          dragRef.current = {
+            nodeId: press.nodeId,
+            offsetX: press.offsetX,
+            offsetY: press.offsetY
+          }
+          pressRef.current = null
+        }
+      }
+
+      const activeDrag = dragRef.current
+      if (!activeDrag) {
         return
       }
 
-      const node = nodeIndex.get(drag.nodeId)
+      const node = nodeIndex.get(activeDrag.nodeId)
       if (!node) {
         return
       }
 
       const nextX = Math.min(
         paneRect.width - node.width - 24,
-        Math.max(24, event.clientX - paneRect.left - drag.offsetX)
+        Math.max(24, event.clientX - paneRect.left - activeDrag.offsetX)
       )
       const nextY = Math.min(
         paneRect.height - node.height - 24,
-        Math.max(24, event.clientY - paneRect.top - drag.offsetY)
+        Math.max(24, event.clientY - paneRect.top - activeDrag.offsetY)
       )
 
       const relatedExcerpt =
@@ -151,7 +173,7 @@ export function WorkspaceCanvas({
 
       onCanvasNodesChange((current) =>
         current.map((entry) =>
-          entry.id === drag.nodeId
+          entry.id === activeDrag.nodeId
             ? {
                 ...entry,
                 x: snappedX,
@@ -176,6 +198,7 @@ export function WorkspaceCanvas({
       }
       resizeRef.current = null
       dragRef.current = null
+      pressRef.current = null
     }
 
     window.addEventListener('pointermove', handlePointerMove)
@@ -301,17 +324,37 @@ export function WorkspaceCanvas({
             node={node}
             active={activeNodeId === node.id}
             onPointerDown={(event) => {
-              event.preventDefault()
               onFocusNode(node.id)
               if (node.sourceAnchorId) {
                 onOpenAnchor(node.sourceAnchorId, node.id)
               }
-              dragRef.current = {
+              pressRef.current = {
                 nodeId: node.id,
                 offsetX: event.clientX - (paneRef.current?.getBoundingClientRect().left ?? 0) - node.x,
-                offsetY: event.clientY - (paneRef.current?.getBoundingClientRect().top ?? 0) - node.y
+                offsetY: event.clientY - (paneRef.current?.getBoundingClientRect().top ?? 0) - node.y,
+                startClientX: event.clientX,
+                startClientY: event.clientY
               }
             }}
+            onSelect={() => {
+              onFocusNode(node.id)
+              if (node.sourceAnchorId) {
+                onOpenAnchor(node.sourceAnchorId, node.id)
+              }
+            }}
+            onTextChange={(nextValue) =>
+              onCanvasNodesChange((current) =>
+                current.map((entry) =>
+                  entry.id === node.id
+                    ? {
+                        ...entry,
+                        text: nextValue,
+                        updatedAt: new Date().toISOString()
+                      }
+                    : entry
+                )
+              )
+            }
             onOpenAnchor={() => {
               onFocusNode(node.id)
               if (node.sourceAnchorId) {

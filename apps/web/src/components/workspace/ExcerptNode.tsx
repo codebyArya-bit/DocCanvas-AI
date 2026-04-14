@@ -1,6 +1,6 @@
 'use client'
 
-import type { PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useRef, type PointerEvent as ReactPointerEvent } from 'react'
 import type { CanvasNode } from '@workspace/domain'
 import { getTextStyleCss } from './text-style'
 
@@ -8,14 +8,37 @@ interface ExcerptNodeProps {
   node: CanvasNode
   active: boolean
   onPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void
+  onSelect: () => void
+  onTextChange: (nextValue: string) => void
   onOpenAnchor: () => void
   onStartLink: (event: ReactPointerEvent<HTMLButtonElement>) => void
   onStartResize: (event: ReactPointerEvent<HTMLButtonElement>) => void
 }
 
-export function ExcerptNode({ node, active, onPointerDown, onOpenAnchor, onStartLink, onStartResize }: ExcerptNodeProps) {
+export function ExcerptNode({
+  node,
+  active,
+  onPointerDown,
+  onSelect,
+  onTextChange,
+  onOpenAnchor,
+  onStartLink,
+  onStartResize
+}: ExcerptNodeProps) {
   const accentColor = node.selectionColor ?? '#ffd400'
   const textStyle = getTextStyleCss(node.textStyle)
+  const editorRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const editor = editorRef.current
+    if (!editor) {
+      return
+    }
+
+    if (editor.textContent !== (node.text ?? '')) {
+      editor.textContent = node.text ?? ''
+    }
+  }, [node.text])
 
   return (
     <div
@@ -29,6 +52,9 @@ export function ExcerptNode({ node, active, onPointerDown, onOpenAnchor, onStart
         borderColor: accentColor
       }}
       onPointerDown={onPointerDown}
+      onClick={() => {
+        onSelect()
+      }}
     >
       {/* Clickable left arrow — jumps to source sentence in the document */}
       <button
@@ -51,7 +77,27 @@ export function ExcerptNode({ node, active, onPointerDown, onOpenAnchor, onStart
           onStartLink(event)
         }}
       />
-      <div className="workspace-node-copy" style={textStyle}>{node.text}</div>
+      <div
+        ref={editorRef}
+        className="workspace-node-copy"
+        contentEditable
+        suppressContentEditableWarning
+        style={textStyle}
+        data-node-editor="true"
+        onPointerDown={(event) => {
+          event.stopPropagation()
+          onSelect()
+        }}
+        onFocus={(event) => {
+          event.stopPropagation()
+          onSelect()
+        }}
+        onInput={(event) => {
+          onTextChange(event.currentTarget.textContent ?? '')
+        }}
+      >
+        {node.text}
+      </div>
       {node.tags?.length ? (
         <div className="workspace-node-tags">
           {node.tags.map((tag) => (

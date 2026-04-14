@@ -72,7 +72,13 @@ export function WorkspaceTextToolbar({
   }
 
   return (
-    <div className="workspace-text-toolbar" style={{ left, top }}>
+    <div
+      className="workspace-text-toolbar"
+      style={{ left, top }}
+      onPointerDown={(event) => {
+        event.stopPropagation()
+      }}
+    >
       <div className="workspace-text-toolbar-actions">
         <button type="button" onClick={onComment}>Comment</button>
         <button type="button" onClick={onEdit}>Edit</button>
