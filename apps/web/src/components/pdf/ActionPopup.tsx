@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 interface ActionPopupProps {
   left: number
@@ -17,6 +17,7 @@ interface ActionPopupProps {
   onAddDefinedTerm: () => void
   onColorChange: (nextColor: string) => void
   onClearSelection: () => void
+  onSizeChange?: (size: { width: number; height: number }) => void
 }
 
 const SWATCHES = ['#ff6b6b', '#2ecc71', '#5d5df6', '#ffd400', '#db38ff', '#00b8d9']
@@ -35,14 +36,42 @@ export function ActionPopup({
   onCopy,
   onAddDefinedTerm,
   onColorChange,
-  onClearSelection
+  onClearSelection,
+  onSizeChange
 }: ActionPopupProps) {
+  const popupRef = useRef<HTMLDivElement | null>(null)
   const [tagDraft, setTagDraft] = useState(tags.join(', '))
   const [moreOpen, setMoreOpen] = useState(false)
 
   useEffect(() => {
     setTagDraft(tags.join(', '))
   }, [tags])
+
+  useEffect(() => {
+    if (!onSizeChange) {
+      return
+    }
+
+    const element = popupRef.current
+    if (!element) {
+      return
+    }
+
+    const emit = () => {
+      const rect = element.getBoundingClientRect()
+      onSizeChange({ width: rect.width, height: rect.height })
+    }
+
+    emit()
+
+    if (typeof ResizeObserver === 'undefined') {
+      return
+    }
+
+    const observer = new ResizeObserver(() => emit())
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [onSizeChange, tags, selectionColor, bookmarked, moreOpen, tagDraft])
 
   const parsedTags = useMemo(
     () =>
@@ -57,6 +86,7 @@ export function ActionPopup({
 
   return (
     <div
+      ref={popupRef}
       className="selection-action-popup"
       style={{
         left,

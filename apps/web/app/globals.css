@@ -76,6 +76,10 @@ button, input, textarea {
   box-shadow: 0 22px 45px rgba(33, 41, 54, 0.2);
   backdrop-filter: blur(16px);
   animation: selection-fade-up 160ms ease-out;
+  max-height: min(48vh, 420px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  touch-action: manipulation;
 }
 
 .selection-action-row {
@@ -100,6 +104,7 @@ button, input, textarea {
   background: rgba(83, 103, 137, 0.12);
   color: #243147;
   cursor: pointer;
+  max-width: 100%;
 }
 
 .selection-action-pill:hover {
@@ -944,6 +949,33 @@ g:hover .workspace-link-path-visible {
   padding: 8px 10px;
   background: rgba(255, 255, 255, 0.9);
   color: var(--text);
+}
+
+@media (max-width: 640px) {
+  .selection-action-popup {
+    width: calc(100% - 16px);
+    padding: 12px;
+    border-radius: 16px;
+  }
+
+  .selection-action-pill {
+    padding: 8px 12px;
+    font-size: 13px;
+  }
+
+  .selection-action-row {
+    gap: 8px;
+  }
+
+  .selection-action-tags {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .selection-action-tags input {
+    min-width: 0;
+    width: min(260px, 60vw);
+  }
 }
 
 .workspace-canvas-title {

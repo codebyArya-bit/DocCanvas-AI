@@ -362,6 +362,13 @@ export function PDFViewer({
         popupHeight: 124
       })
 
+      const selectionBounds = {
+        left: primaryRect.left - rootRect.left + root.scrollLeft,
+        top: primaryRect.top - rootRect.top + root.scrollTop,
+        width: primaryRect.width,
+        height: primaryRect.height
+      }
+
       setPopupState({
         selection: {
           workspaceId,
@@ -383,7 +390,8 @@ export function PDFViewer({
         top: popupPosition.top + root.scrollTop,
         viewportRatio:
           root.clientHeight > 0 ? (primaryRect.top - rootRect.top + root.scrollTop) / root.clientHeight : 0.25,
-        tags: anchor.tags ?? []
+        tags: anchor.tags ?? [],
+        selectionBounds
       })
       restorePdfSelectionFromAnchor(pageElement, anchor)
       onOpenAnchor(anchorId)

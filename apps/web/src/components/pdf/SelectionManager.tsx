@@ -12,6 +12,12 @@ export interface SelectionPopupState {
   top: number
   viewportRatio: number
   tags: string[]
+  selectionBounds: {
+    left: number
+    top: number
+    width: number
+    height: number
+  }
 }
 
 interface SelectionRect {
@@ -119,6 +125,7 @@ export function SelectionManager({
   const [uncontrolledPopupState, setUncontrolledPopupState] = useState<SelectionPopupState | null>(null)
   const [isSelecting, setIsSelecting] = useState(false)
   const [loupeState, setLoupeState] = useState<SelectionLoupeState | null>(null)
+  const [popupSize, setPopupSize] = useState<{ width: number; height: number } | null>(null)
   const isSelectingRef = useRef(false)
 
   const popupState = controlledPopupState ?? uncontrolledPopupState
@@ -175,6 +182,43 @@ export function SelectionManager({
     })
   }, [popupState?.selection.selectionColor, rootRef])
 
+  const recomputePopupPosition = useCallback(
+    (state: SelectionPopupState, nextPopupSize: { width: number; height: number }) => {
+      const root = rootRef.current
+      if (!root) {
+        return null
+      }
+
+      const rootRect = root.getBoundingClientRect()
+      const selectionRectViewport = new DOMRect(
+        state.selectionBounds.left - root.scrollLeft + rootRect.left,
+        state.selectionBounds.top - root.scrollTop + rootRect.top,
+        state.selectionBounds.width,
+        state.selectionBounds.height
+      )
+
+      const safePopupWidth = Math.min(nextPopupSize.width, Math.max(120, rootRect.width - 24))
+      const safePopupHeight = Math.min(nextPopupSize.height, Math.max(80, rootRect.height - 24))
+      const popupPosition = clampPopupPosition({
+        containerRect: rootRect,
+        selectionRect: selectionRectViewport,
+        popupWidth: safePopupWidth,
+        popupHeight: safePopupHeight,
+        gap: 14
+      })
+
+      const nextLeft = popupPosition.left + root.scrollLeft
+      const nextTop = popupPosition.top + root.scrollTop
+
+      if (Math.abs(nextLeft - state.left) < 0.5 && Math.abs(nextTop - state.top) < 0.5) {
+        return null
+      }
+
+      return { nextLeft, nextTop }
+    },
+    [rootRef]
+  )
+
   const commitSelection = useCallback(() => {
     const root = rootRef.current
     if (!root) {
@@ -188,16 +232,24 @@ export function SelectionManager({
     }
 
     const rootRect = root.getBoundingClientRect()
-    const popupSize = { width: 560, height: 124 }
+    const nextPopupSize = popupSize ?? { width: 560, height: 152 }
     const popupPosition = clampPopupPosition({
       containerRect: rootRect,
       selectionRect,
-      popupWidth: popupSize.width,
-      popupHeight: popupSize.height
+      popupWidth: Math.min(nextPopupSize.width, Math.max(120, rootRect.width - 24)),
+      popupHeight: Math.min(nextPopupSize.height, Math.max(80, rootRect.height - 24)),
+      gap: 14
     })
 
     const viewportRatio =
       root.clientHeight > 0 ? (selectionRect.top - rootRect.top + root.scrollTop) / root.clientHeight : 0.25
+
+    const selectionBounds = {
+      left: selectionRect.left - rootRect.left + root.scrollLeft,
+      top: selectionRect.top - rootRect.top + root.scrollTop,
+      width: selectionRect.width,
+      height: selectionRect.height
+    }
 
     setPopupState({
       selection: {
@@ -218,9 +270,57 @@ export function SelectionManager({
       left: popupPosition.left + root.scrollLeft,
       top: popupPosition.top + root.scrollTop,
       viewportRatio,
-      tags: popupState?.tags ?? []
+      tags: popupState?.tags ?? [],
+      selectionBounds
     })
-  }, [documentId, popupState?.selection.selectionColor, popupState?.tags, rootRef, setPopupState, workspaceId])
+  }, [documentId, popupSize, popupState?.selection.selectionColor, popupState?.tags, rootRef, setPopupState, workspaceId])
+
+  useEffect(() => {
+    if (!popupState || !popupSize) {
+      return
+    }
+
+    const next = recomputePopupPosition(popupState, popupSize)
+    if (!next) {
+      return
+    }
+
+    setPopupState((current) =>
+      current
+        ? {
+            ...current,
+            left: next.nextLeft,
+            top: next.nextTop
+          }
+        : current
+    )
+  }, [popupSize, popupState, recomputePopupPosition, setPopupState])
+
+  useEffect(() => {
+    if (!popupState || !popupSize) {
+      return
+    }
+
+    const handleResize = () => {
+      const next = recomputePopupPosition(popupState, popupSize)
+      if (!next) {
+        return
+      }
+
+      setPopupState((current) =>
+        current
+          ? {
+              ...current,
+              left: next.nextLeft,
+              top: next.nextTop
+            }
+          : current
+      )
+    }
+
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [popupSize, popupState, recomputePopupPosition, setPopupState])
 
   useEffect(() => {
     const root = rootRef.current
@@ -322,6 +422,7 @@ export function SelectionManager({
         tags={popupState.tags}
         bookmarked={bookmarked}
         interactive={!isSelecting}
+        onSizeChange={setPopupSize}
         onAutoExcerpt={() => {
           onAutoExcerpt({ selection: popupState.selection, viewportRatio: popupState.viewportRatio })
           dismiss()
