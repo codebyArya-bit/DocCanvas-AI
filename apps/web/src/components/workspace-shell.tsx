@@ -712,6 +712,56 @@ export function WorkspaceShell() {
     })
   }
 
+  function removeHighlightByAnchorId(anchorId: string) {
+    const nodesToRemove = canvasNodes.filter((entry) => entry.sourceAnchorId === anchorId)
+    const nodeIdsToRemove = new Set(nodesToRemove.map((node) => node.id))
+    const excerptIdsToConsider = new Set(nodesToRemove.map((node) => node.excerptId).filter(Boolean) as string[])
+
+    const remainingNodes = canvasNodes.filter((entry) => entry.sourceAnchorId !== anchorId)
+    const remainingEdges = canvasEdges.filter((edge) => !nodeIdsToRemove.has(edge.targetNodeId))
+    const remainingWorkspaceLinks = workspaceLinks.filter(
+      (link) => !nodeIdsToRemove.has(link.fromNodeId) && !nodeIdsToRemove.has(link.toNodeId)
+    )
+
+    const excerptIdsToRemove = new Set<string>()
+    excerptIdsToConsider.forEach((excerptId) => {
+      if (!remainingNodes.some((entry) => entry.excerptId === excerptId)) {
+        excerptIdsToRemove.add(excerptId)
+      }
+    })
+
+    const remainingExcerpts = excerptIdsToRemove.size
+      ? excerpts.filter((excerpt) => excerpt.anchorId !== anchorId && !excerptIdsToRemove.has(excerpt.id))
+      : excerpts.filter((excerpt) => excerpt.anchorId !== anchorId)
+
+    const remainingBookmarks = bookmarks.filter((bookmark) => bookmark.sourceAnchorId !== anchorId)
+    const remainingAnchors = anchors.filter((anchor) => anchor.id !== anchorId)
+
+    setCanvasNodes(remainingNodes)
+    setCanvasEdges(remainingEdges)
+    setWorkspaceLinks(remainingWorkspaceLinks)
+    setBookmarks(remainingBookmarks)
+    setAnchors(remainingAnchors)
+    setExcerpts(remainingExcerpts)
+
+    if (activeAnchorId === anchorId) {
+      setActiveAnchorId(null)
+    }
+    if (activeNodeId && nodeIdsToRemove.has(activeNodeId)) {
+      setActiveNodeId(null)
+    }
+    setActiveEdgeId((current) => {
+      if (!current) {
+        return current
+      }
+      return remainingEdges.some((edge) => edge.id === current) ? current : null
+    })
+  }
+
+  const clearFocusAll = () => {
+    focusBoth(null, null, null)
+  }
+
   function resolveAnchorColor(anchorId: string) {
     return (
       canvasNodes.find((node) => node.sourceAnchorId === anchorId)?.selectionColor ??
@@ -865,12 +915,17 @@ export function WorkspaceShell() {
             const anchorId = buildPageAnchor(selection).id
             removeExcerptByAnchorId(anchorId)
           }}
+          onRemoveHighlight={(selection) => {
+            const anchorId = buildPageAnchor(selection).id
+            removeHighlightByAnchorId(anchorId)
+          }}
           onTag={tagSelection}
           onSelectionChange={recolorSelection}
           onOpenAnchor={(anchorId) => {
             focusBoth(anchorId, resolvePreferredNodeIdForAnchor(anchorId))
           }}
           onAnchorMetricsChange={setAnchorMetrics}
+          onClearFocus={clearFocusAll}
         />
       </section>
 

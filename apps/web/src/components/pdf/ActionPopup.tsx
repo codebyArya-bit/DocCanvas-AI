@@ -14,6 +14,7 @@ interface ActionPopupProps {
   onComment: () => void
   onBookmark: () => void
   onRemoveExcerpt?: () => void
+  onRemoveHighlight?: () => void
   onTag: (tags: string[]) => void
   onCopy: () => void
   onAddDefinedTerm: () => void
@@ -37,6 +38,7 @@ export function ActionPopup({
   onComment,
   onBookmark,
   onRemoveExcerpt,
+  onRemoveHighlight,
   onTag,
   onCopy,
   onAddDefinedTerm,
@@ -159,6 +161,18 @@ export function ActionPopup({
                   >
                     Clear Tags
                   </button>
+                {onRemoveHighlight ? (
+                  <button
+                    className="selection-action-menu-item"
+                    type="button"
+                    onClick={() => {
+                      onRemoveHighlight()
+                      setMoreOpen(false)
+                    }}
+                  >
+                    Remove Highlight
+                  </button>
+                ) : null}
                   {onUndoAll ? (
                     <button
                       className="selection-action-menu-item"

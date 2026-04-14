@@ -194,10 +194,12 @@ interface PdfViewerProps {
   onComment: (payload: { selection: SelectionArtifactInput; viewportRatio: number }) => void
   onBookmark: (selection: SelectionArtifactInput) => void
   onRemoveExcerpt?: (selection: SelectionArtifactInput) => void
+  onRemoveHighlight?: (selection: SelectionArtifactInput) => void
   onTag: (selection: SelectionArtifactInput, tags: string[]) => void
   onSelectionChange: (selection: SelectionArtifactInput) => void
   onOpenAnchor: (anchorId: string) => void
   onAnchorMetricsChange: (metrics: Record<string, AnchorViewportMetric>) => void
+  onClearFocus?: () => void
 }
 
 function hueFromString(input: string) {
@@ -222,10 +224,12 @@ export function PDFViewer({
   onComment,
   onBookmark,
   onRemoveExcerpt,
+  onRemoveHighlight,
   onTag,
   onSelectionChange,
   onOpenAnchor,
-  onAnchorMetricsChange
+  onAnchorMetricsChange,
+  onClearFocus
 }: PdfViewerProps) {
   const rootRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -751,8 +755,10 @@ export function PDFViewer({
               onComment={onComment}
               onBookmark={onBookmark}
               onRemoveExcerpt={onRemoveExcerpt}
+              onRemoveHighlight={onRemoveHighlight}
               onTag={onTag}
               onSelectionChange={onSelectionChange}
+              onClearFocus={onClearFocus}
             />
           </div>
         </div>

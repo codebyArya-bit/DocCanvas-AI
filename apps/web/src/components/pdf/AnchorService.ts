@@ -127,18 +127,19 @@ export function clampPopupPosition({
   popupHeight,
   gap = 12
 }: PopupPlacementInput) {
+  const inset = 18
   const preferredLeft = selectionRect.left - containerRect.left + selectionRect.width / 2 - popupWidth / 2
   const safeLeft = Math.min(
-    containerRect.width - popupWidth - 12,
-    Math.max(12, preferredLeft)
+    containerRect.width - popupWidth - inset,
+    Math.max(inset, preferredLeft)
   )
 
   const preferredTop = selectionRect.top - containerRect.top - popupHeight - gap
   const flippedTop = selectionRect.bottom - containerRect.top + gap
-  const safeTop = preferredTop < 12 ? flippedTop : preferredTop
+  const safeTop = preferredTop < inset ? flippedTop : preferredTop
 
   return {
     left: safeLeft,
-    top: Math.min(containerRect.height - popupHeight - 12, Math.max(12, safeTop))
+    top: Math.min(containerRect.height - popupHeight - inset, Math.max(inset, safeTop))
   }
 }

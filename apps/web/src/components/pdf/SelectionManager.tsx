@@ -46,8 +46,10 @@ interface SelectionManagerProps {
   onComment: (payload: { selection: SelectionArtifactInput; viewportRatio: number }) => void
   onBookmark: (selection: SelectionArtifactInput) => void
   onRemoveExcerpt?: (selection: SelectionArtifactInput) => void
+  onRemoveHighlight?: (selection: SelectionArtifactInput) => void
   onTag: (selection: SelectionArtifactInput, tags: string[]) => void
   onSelectionChange?: (selection: SelectionArtifactInput) => void
+  onClearFocus?: () => void
 }
 
 function getSelectionRect(): DOMRect | null {
@@ -123,8 +125,10 @@ export function SelectionManager({
   onComment,
   onBookmark,
   onRemoveExcerpt,
+  onRemoveHighlight,
   onTag,
-  onSelectionChange
+  onSelectionChange,
+  onClearFocus
 }: SelectionManagerProps) {
   const [uncontrolledPopupState, setUncontrolledPopupState] = useState<SelectionPopupState | null>(null)
   const [isSelecting, setIsSelecting] = useState(false)
@@ -163,6 +167,7 @@ export function SelectionManager({
     } catch {}
     setLoupeState(null)
     setPopupState(null)
+    onClearFocus?.()
   }, [setPopupState])
 
   const updateLoupe = useCallback(() => {
@@ -420,6 +425,12 @@ export function SelectionManager({
     const bookmarked = bookmarkedSet.has(anchorId)
     const excerpted = excerptedSet.has(anchorId)
     const undoAll = () => {
+      if (onRemoveHighlight) {
+        onRemoveHighlight(popupState.selection)
+        clearSelection()
+        return
+      }
+
       if (popupState.tags.length > 0) {
         const nextSelection = { ...popupState.selection, tags: [] }
         setPopupState((current) => (current ? { ...current, selection: nextSelection, tags: [] } : current))
@@ -457,6 +468,14 @@ export function SelectionManager({
           excerpted && onRemoveExcerpt
             ? () => {
                 onRemoveExcerpt(popupState.selection)
+              }
+            : undefined
+        }
+        onRemoveHighlight={
+          onRemoveHighlight
+            ? () => {
+                onRemoveHighlight(popupState.selection)
+                clearSelection()
               }
             : undefined
         }
@@ -503,7 +522,7 @@ export function SelectionManager({
         onUndoAll={undoAll}
       />
     )
-  }, [bookmarkedSet, clearSelection, excerptedSet, isSelecting, onAutoExcerpt, onBookmark, onComment, onRemoveExcerpt, onSelectionChange, onTag, popupState, setPopupState])
+  }, [bookmarkedSet, clearSelection, excerptedSet, isSelecting, onAutoExcerpt, onBookmark, onComment, onRemoveExcerpt, onRemoveHighlight, onSelectionChange, onTag, popupState, setPopupState])
 
   const overlayRects = useMemo(() => {
     const root = rootRef.current
