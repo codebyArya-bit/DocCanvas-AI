@@ -911,12 +911,10 @@ export function WorkspaceShell() {
             const linkedNodeId = resolvePreferredNodeIdForAnchor(anchor.id)
             setActiveNodeId(linkedNodeId)
           }}
-          onRemoveExcerpt={(selection) => {
-            const anchorId = buildPageAnchor(selection).id
+          onRemoveExcerpt={(anchorId) => {
             removeExcerptByAnchorId(anchorId)
           }}
-          onRemoveHighlight={(selection) => {
-            const anchorId = buildPageAnchor(selection).id
+          onRemoveHighlight={(anchorId) => {
             removeHighlightByAnchorId(anchorId)
           }}
           onTag={tagSelection}

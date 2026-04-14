@@ -193,8 +193,8 @@ interface PdfViewerProps {
   onAutoExcerpt: (payload: { selection: SelectionArtifactInput; viewportRatio: number }) => void
   onComment: (payload: { selection: SelectionArtifactInput; viewportRatio: number }) => void
   onBookmark: (selection: SelectionArtifactInput) => void
-  onRemoveExcerpt?: (selection: SelectionArtifactInput) => void
-  onRemoveHighlight?: (selection: SelectionArtifactInput) => void
+  onRemoveExcerpt?: (anchorId: string) => void
+  onRemoveHighlight?: (anchorId: string) => void
   onTag: (selection: SelectionArtifactInput, tags: string[]) => void
   onSelectionChange: (selection: SelectionArtifactInput) => void
   onOpenAnchor: (anchorId: string) => void
@@ -396,6 +396,7 @@ export function PDFViewer({
       }
 
       setPopupState({
+        anchorId,
         selection: {
           workspaceId,
           documentId: documentState?.record.id ?? anchor.documentId,

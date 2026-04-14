@@ -7,6 +7,7 @@ import { ActionPopup } from './ActionPopup'
 import { clampPopupPosition } from './AnchorService'
 
 export interface SelectionPopupState {
+  anchorId: string
   selection: SelectionArtifactInput
   left: number
   top: number
@@ -45,8 +46,8 @@ interface SelectionManagerProps {
   onAutoExcerpt: (payload: { selection: SelectionArtifactInput; viewportRatio: number }) => void
   onComment: (payload: { selection: SelectionArtifactInput; viewportRatio: number }) => void
   onBookmark: (selection: SelectionArtifactInput) => void
-  onRemoveExcerpt?: (selection: SelectionArtifactInput) => void
-  onRemoveHighlight?: (selection: SelectionArtifactInput) => void
+  onRemoveExcerpt?: (anchorId: string) => void
+  onRemoveHighlight?: (anchorId: string) => void
   onTag: (selection: SelectionArtifactInput, tags: string[]) => void
   onSelectionChange?: (selection: SelectionArtifactInput) => void
   onClearFocus?: () => void
@@ -261,7 +262,17 @@ export function SelectionManager({
       height: selectionRect.height
     }
 
+    const anchorId = buildPageAnchor({
+      ...nextSelection.anchor,
+      workspaceId,
+      documentId,
+      text: nextSelection.text,
+      selectionColor: popupState?.selection.selectionColor ?? '#5d5df6',
+      tags: popupState?.tags ?? []
+    }).id
+
     setPopupState({
+      anchorId,
       selection: {
         workspaceId,
         documentId,
@@ -421,12 +432,11 @@ export function SelectionManager({
       return null
     }
 
-    const anchorId = buildPageAnchor(popupState.selection).id
-    const bookmarked = bookmarkedSet.has(anchorId)
-    const excerpted = excerptedSet.has(anchorId)
+    const bookmarked = bookmarkedSet.has(popupState.anchorId)
+    const excerpted = excerptedSet.has(popupState.anchorId)
     const undoAll = () => {
       if (onRemoveHighlight) {
-        onRemoveHighlight(popupState.selection)
+        onRemoveHighlight(popupState.anchorId)
         clearSelection()
         return
       }
@@ -440,7 +450,7 @@ export function SelectionManager({
         onBookmark(popupState.selection)
       }
       if (excerpted && onRemoveExcerpt) {
-        onRemoveExcerpt(popupState.selection)
+        onRemoveExcerpt(popupState.anchorId)
       }
       clearSelection()
     }
@@ -467,14 +477,14 @@ export function SelectionManager({
         onRemoveExcerpt={
           excerpted && onRemoveExcerpt
             ? () => {
-                onRemoveExcerpt(popupState.selection)
+                onRemoveExcerpt(popupState.anchorId)
               }
             : undefined
         }
         onRemoveHighlight={
           onRemoveHighlight
             ? () => {
-                onRemoveHighlight(popupState.selection)
+                onRemoveHighlight(popupState.anchorId)
                 clearSelection()
               }
             : undefined
