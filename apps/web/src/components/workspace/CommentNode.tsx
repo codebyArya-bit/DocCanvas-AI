@@ -54,6 +54,9 @@ export function CommentNode({
       onPointerDown={() => {
         onSelect()
       }}
+      onClick={() => {
+        onSelect()
+      }}
     >
       {/* Clickable left arrow — jumps to source sentence in the document */}
       <button
@@ -88,6 +91,7 @@ export function CommentNode({
         contentEditable
         suppressContentEditableWarning
         style={textStyle}
+        data-node-editor="true"
         data-placeholder="Write your comment..."
         onPointerDown={(event) => {
           event.stopPropagation()

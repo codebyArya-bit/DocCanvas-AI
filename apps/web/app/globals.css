@@ -663,11 +663,12 @@ button, input, textarea {
   border-radius: 18px;
   background: rgba(182, 194, 212, 0.96);
   box-shadow: 0 14px 30px rgba(34, 44, 70, 0.18);
-  z-index: 12;
+  z-index: 32;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 18px;
+  pointer-events: auto;
 }
 
 .workspace-text-toolbar-actions,
@@ -855,6 +856,10 @@ button, input, textarea {
   z-index: 20;
 }
 
+.workspace-link-layer * {
+  pointer-events: none !important;
+}
+
 .workspace-link-path {
   fill: none;
   stroke-linecap: round;
@@ -894,6 +899,7 @@ g:hover .workspace-link-path-visible {
   box-shadow: 0 0 0 3px rgba(79, 140, 255, 0.18);
   cursor: crosshair;
   padding: 0;
+  z-index: 2;
 }
 
 .workspace-node-resize-handle {

@@ -78,6 +78,12 @@ export function WorkspaceTextToolbar({
       onPointerDown={(event) => {
         event.stopPropagation()
       }}
+      onPointerUp={(event) => {
+        event.stopPropagation()
+      }}
+      onClick={(event) => {
+        event.stopPropagation()
+      }}
     >
       <div className="workspace-text-toolbar-actions">
         <button type="button" onClick={onComment}>Comment</button>
