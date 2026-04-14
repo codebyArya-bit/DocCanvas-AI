@@ -785,7 +785,18 @@ export function WorkspaceShell() {
           }}
           onBookmark={(selection) => {
             const anchor = buildPageAnchor(selection)
-            const bookmark = buildBookmark(selection, bookmarks.length + 1)
+            const isAlreadyBookmarked = bookmarks.some((bookmark) => bookmark.sourceAnchorId === anchor.id)
+            if (isAlreadyBookmarked) {
+              setBookmarks((current) => current.filter((bookmark) => bookmark.sourceAnchorId !== anchor.id))
+              if (activeAnchorId === anchor.id) {
+                setActiveAnchorId(null)
+              }
+              return
+            }
+
+            const nextOrder =
+              bookmarks.reduce((max, bookmark) => Math.max(max, bookmark.documentOrder), 0) + 1
+            const bookmark = buildBookmark(selection, nextOrder)
             setAnchors((current) => upsertById(current, anchor))
             setBookmarks((current) => upsertById(current, bookmark))
             setActiveAnchorId(anchor.id)

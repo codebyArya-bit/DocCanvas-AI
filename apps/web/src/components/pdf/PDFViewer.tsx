@@ -243,6 +243,7 @@ export function PDFViewer({
   }, [])
 
   const anchorIndex = useMemo(() => new Map(anchors.map((anchor) => [anchor.id, anchor])), [anchors])
+  const bookmarkedAnchorIds = useMemo(() => bookmarks.map((bookmark) => bookmark.sourceAnchorId), [bookmarks])
   const focusedAnchor = activeSourceFocus ? anchorIndex.get(activeSourceFocus.anchorId) ?? null : null
   const focusedAnchorId = focusedAnchor?.id ?? null
   const focusedAnchorPage = focusedAnchor?.pageNumber ?? null
@@ -626,6 +627,7 @@ export function PDFViewer({
               rootRef={rootRef}
               workspaceId={workspaceId}
               documentId={documentState.record.id}
+              bookmarkedAnchorIds={bookmarkedAnchorIds}
               popupState={popupState}
               onPopupStateChange={setPopupState}
               onAutoExcerpt={onAutoExcerpt}

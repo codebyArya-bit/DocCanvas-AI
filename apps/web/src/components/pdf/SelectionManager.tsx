@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import type { SelectionArtifactInput } from '../../lib/excerpts/pdf-selection'
-import { capturePdfSelection, getVisibleSelectionClientRects } from '../../lib/excerpts/pdf-selection'
+import { buildPageAnchor, capturePdfSelection, getVisibleSelectionClientRects } from '../../lib/excerpts/pdf-selection'
 import { ActionPopup } from './ActionPopup'
 import { clampPopupPosition } from './AnchorService'
 
@@ -32,6 +32,7 @@ interface SelectionManagerProps {
   rootRef: RefObject<HTMLDivElement | null>
   workspaceId: string
   documentId: string
+  bookmarkedAnchorIds?: string[]
   popupState?: SelectionPopupState | null
   onPopupStateChange?: (state: SelectionPopupState | null) => void
   onAutoExcerpt: (payload: { selection: SelectionArtifactInput; viewportRatio: number }) => void
@@ -106,6 +107,7 @@ export function SelectionManager({
   rootRef,
   workspaceId,
   documentId,
+  bookmarkedAnchorIds,
   popupState: controlledPopupState,
   onPopupStateChange,
   onAutoExcerpt,
@@ -120,6 +122,7 @@ export function SelectionManager({
   const isSelectingRef = useRef(false)
 
   const popupState = controlledPopupState ?? uncontrolledPopupState
+  const bookmarkedSet = useMemo(() => new Set(bookmarkedAnchorIds ?? []), [bookmarkedAnchorIds])
 
   const setPopupState = useCallback(
     (nextState: SelectionPopupState | null | ((current: SelectionPopupState | null) => SelectionPopupState | null)) => {
@@ -141,6 +144,14 @@ export function SelectionManager({
   const dismiss = useCallback(() => {
     setPopupState(null)
   }, [])
+
+  const clearSelection = useCallback(() => {
+    try {
+      document.getSelection()?.removeAllRanges()
+    } catch {}
+    setLoupeState(null)
+    setPopupState(null)
+  }, [setPopupState])
 
   const updateLoupe = useCallback(() => {
     const root = rootRef.current
@@ -264,7 +275,7 @@ export function SelectionManager({
       }
 
       setLoupeState(null)
-      dismiss()
+      clearSelection()
     }
 
     root.addEventListener('pointerdown', handlePointerDown)
@@ -282,12 +293,26 @@ export function SelectionManager({
       document.removeEventListener('pointerup', handlePointerUp)
       document.removeEventListener('pointerdown', handleDocumentPointerDown)
     }
-  }, [commitSelection, dismiss, rootRef, updateLoupe])
+  }, [clearSelection, commitSelection, dismiss, rootRef, updateLoupe])
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        clearSelection()
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [clearSelection])
 
   const popup = useMemo(() => {
     if (!popupState) {
       return null
     }
+
+    const anchorId = buildPageAnchor(popupState.selection).id
+    const bookmarked = bookmarkedSet.has(anchorId)
 
     return (
       <ActionPopup
@@ -295,6 +320,7 @@ export function SelectionManager({
         top={popupState.top}
         selectionColor={popupState.selection.selectionColor}
         tags={popupState.tags}
+        bookmarked={bookmarked}
         interactive={!isSelecting}
         onAutoExcerpt={() => {
           onAutoExcerpt({ selection: popupState.selection, viewportRatio: popupState.viewportRatio })
@@ -348,9 +374,10 @@ export function SelectionManager({
             onSelectionChange?.(nextSelection)
           }
         }}
+        onClearSelection={clearSelection}
       />
     )
-  }, [dismiss, onAutoExcerpt, onBookmark, onComment, onSelectionChange, onTag, popupState, setPopupState])
+  }, [bookmarkedSet, clearSelection, dismiss, onAutoExcerpt, onBookmark, onComment, onSelectionChange, onTag, popupState, setPopupState])
 
   const overlayRects = useMemo(() => {
     const root = rootRef.current

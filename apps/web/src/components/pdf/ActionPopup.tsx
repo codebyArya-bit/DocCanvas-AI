@@ -7,6 +7,7 @@ interface ActionPopupProps {
   top: number
   tags: string[]
   selectionColor: string
+  bookmarked: boolean
   interactive?: boolean
   onAutoExcerpt: () => void
   onComment: () => void
@@ -15,6 +16,7 @@ interface ActionPopupProps {
   onCopy: () => void
   onAddDefinedTerm: () => void
   onColorChange: (nextColor: string) => void
+  onClearSelection: () => void
 }
 
 const SWATCHES = ['#ff6b6b', '#2ecc71', '#5d5df6', '#ffd400', '#db38ff', '#00b8d9']
@@ -24,6 +26,7 @@ export function ActionPopup({
   top,
   tags,
   selectionColor,
+  bookmarked,
   interactive = true,
   onAutoExcerpt,
   onComment,
@@ -31,7 +34,8 @@ export function ActionPopup({
   onTag,
   onCopy,
   onAddDefinedTerm,
-  onColorChange
+  onColorChange,
+  onClearSelection
 }: ActionPopupProps) {
   const [tagDraft, setTagDraft] = useState(tags.join(', '))
   const [moreOpen, setMoreOpen] = useState(false)
@@ -48,6 +52,8 @@ export function ActionPopup({
         .filter(Boolean),
     [tagDraft]
   )
+
+  const normalizedTags = useMemo(() => tags.map((t) => t.trim()).filter(Boolean), [tags])
 
   return (
     <div
@@ -73,7 +79,7 @@ export function ActionPopup({
           Comment
         </button>
         <button className="selection-action-pill" type="button" onClick={onBookmark}>
-          Bookmark
+          {bookmarked ? 'Remove Bookmark' : 'Bookmark'}
         </button>
         <button
           className="selection-action-pill"
@@ -83,6 +89,9 @@ export function ActionPopup({
           }}
         >
           Tag
+        </button>
+        <button className="selection-action-pill" type="button" onClick={onClearSelection}>
+          Clear
         </button>
         <div className="selection-action-more">
           <button
@@ -96,6 +105,16 @@ export function ActionPopup({
             <div className="selection-action-menu">
               <button className="selection-action-menu-item" type="button" onClick={onCopy}>
                 Copy
+              </button>
+              <button
+                className="selection-action-menu-item"
+                type="button"
+                onClick={() => {
+                  onTag([])
+                  setMoreOpen(false)
+                }}
+              >
+                Clear Tags
               </button>
               <button className="selection-action-menu-item" type="button" onClick={onAddDefinedTerm}>
                 Add Defined Term
@@ -131,6 +150,27 @@ export function ActionPopup({
           />
         </label>
       </div>
+
+      {normalizedTags.length > 0 ? (
+        <div className="selection-action-row selection-action-row-secondary" style={{ paddingTop: 0 }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {normalizedTags.map((tag) => (
+              <button
+                key={tag}
+                type="button"
+                className="selection-action-pill"
+                onClick={() => {
+                  const next = normalizedTags.filter((t) => t !== tag)
+                  setTagDraft(next.join(', '))
+                  onTag(next)
+                }}
+              >
+                {tag} ×
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }
