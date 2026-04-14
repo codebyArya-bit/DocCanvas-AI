@@ -13,13 +13,23 @@ import { clampPopupPosition } from './AnchorService'
 import { SelectionManager, type SelectionPopupState } from './SelectionManager'
 
 let pdfModulePromise: Promise<any> | null = null
+let pdfModuleConfigured = false
 
 async function loadPdfModule() {
   if (!pdfModulePromise) {
-    pdfModulePromise = import('pdfjs-dist/webpack.mjs')
+    pdfModulePromise = import('pdfjs-dist/legacy/build/pdf.mjs')
   }
 
-  return pdfModulePromise
+  const pdfjs = await pdfModulePromise
+  if (!pdfModuleConfigured) {
+    pdfModuleConfigured = true
+    try {
+      const workerUrl = new URL('pdfjs-dist/legacy/build/pdf.worker.mjs', import.meta.url)
+      pdfjs.GlobalWorkerOptions.workerSrc = workerUrl.toString()
+    } catch {}
+  }
+
+  return pdfjs
 }
 
 class PdfDocumentController {
@@ -48,6 +58,39 @@ class PdfDocumentController {
     }
   }
 
+  private async openWithFallback(pdfjs: any, bytes: Uint8Array, preferDisableWorker: boolean) {
+    const baseOptions: any = { data: bytes }
+    const options = preferDisableWorker ? { ...baseOptions, disableWorker: true } : baseOptions
+    let task: any = null
+
+    try {
+      task = pdfjs.getDocument(options)
+      const document = await task.promise
+      return { task, document }
+    } catch (error: any) {
+      if (task?.destroy) {
+        try {
+          await task.destroy()
+        } catch {}
+      }
+
+      const message = error instanceof Error ? error.message : String(error)
+      const looksLikeWorkerFailure =
+        error?.name === 'UnknownErrorException' ||
+        /worker/i.test(message) ||
+        /Setting up fake worker failed/i.test(message) ||
+        /Failed to fetch dynamically imported module/i.test(message)
+
+      if (!preferDisableWorker && looksLikeWorkerFailure) {
+        task = pdfjs.getDocument({ ...baseOptions, disableWorker: true })
+        const document = await task.promise
+        return { task, document }
+      }
+
+      throw error
+    }
+  }
+
   load(bytes: Uint8Array, onSuccess: (doc: any) => void, onError: (message: string) => void): () => void {
     let cancelled = false
     this.chain = this.chain.then(async () => {
@@ -62,9 +105,8 @@ class PdfDocumentController {
           return
         }
 
-        const task = pdfjs.getDocument({ data: bytes })
+        const { task, document } = await this.openWithFallback(pdfjs, bytes, false)
         this.activeTask = task
-        const document = await task.promise
         if (cancelled) {
           await this.destroyCurrent()
           return
@@ -75,6 +117,14 @@ class PdfDocumentController {
       } catch (error: any) {
         await this.destroyCurrent()
         if (cancelled || error?.name === 'AbortException') {
+          return
+        }
+        if (error?.name === 'PasswordException') {
+          onError('This PDF is password-protected and cannot be opened.')
+          return
+        }
+        if (error?.name === 'InvalidPDFException') {
+          onError('This file is not a valid PDF.')
           return
         }
         onError(error instanceof Error ? error.message : 'Failed to open PDF document.')
@@ -169,6 +219,13 @@ export function PDFViewer({
   const [pageRenderTick, setPageRenderTick] = useState(0)
   const handlePageRendered = useCallback(() => {
     setPageRenderTick((current) => current + 1)
+  }, [])
+  const handlePageRenderError = useCallback((pageNumber: number, error: unknown) => {
+    setViewerError((current) => {
+      if (current) return current
+      const message = error instanceof Error ? error.message : String(error)
+      return `Failed to render PDF page ${pageNumber}. ${message}`
+    })
   }, [])
   const registerCanvas = useCallback((pageNumber: number, canvas: HTMLCanvasElement | null) => {
     if (canvas) {
@@ -367,16 +424,50 @@ export function PDFViewer({
     }
   }, [anchors, documentState, onAnchorMetricsChange, pageRenderTick, shellRef])
 
+  const isPdfFile = useCallback((file: File | null | undefined) => {
+    if (!file) return false
+    const name = file.name?.toLowerCase?.() ?? ''
+    const type = file.type?.toLowerCase?.() ?? ''
+    return type === 'application/pdf' || name.endsWith('.pdf')
+  }, [])
+
   async function importPdfFile(file: File) {
     let loadingTask: any = null
 
     try {
+      if (!isPdfFile(file)) {
+        setViewerError('Only PDF files are supported right now.')
+        return
+      }
+
       const pdfjs = await loadPdfModule()
       const sourceBytes = new Uint8Array(await file.arrayBuffer())
       const viewerBytes = sourceBytes.slice()
       const storedBytes = sourceBytes.slice()
       loadingTask = pdfjs.getDocument({ data: viewerBytes })
-      const pdf = await loadingTask.promise
+      let pdf: any = null
+      try {
+        pdf = await loadingTask.promise
+      } catch (error: any) {
+        const message = error instanceof Error ? error.message : String(error)
+        const looksLikeWorkerFailure =
+          error?.name === 'UnknownErrorException' ||
+          /worker/i.test(message) ||
+          /Setting up fake worker failed/i.test(message) ||
+          /Failed to fetch dynamically imported module/i.test(message)
+        if (!looksLikeWorkerFailure) {
+          throw error
+        }
+
+        if (loadingTask?.destroy) {
+          try {
+            await loadingTask.destroy()
+          } catch {}
+        }
+
+        loadingTask = pdfjs.getDocument({ data: viewerBytes, disableWorker: true })
+        pdf = await loadingTask.promise
+      }
       const now = new Date().toISOString()
 
       await loadingTask.destroy()
@@ -405,7 +496,14 @@ export function PDFViewer({
         } catch {}
       }
 
-      setViewerError(error instanceof Error ? error.message : 'Failed to import PDF.')
+      const err = error as any
+      if (err?.name === 'PasswordException') {
+        setViewerError('This PDF is password-protected and cannot be opened.')
+      } else if (err?.name === 'InvalidPDFException') {
+        setViewerError('This file is not a valid PDF.')
+      } else {
+        setViewerError(error instanceof Error ? error.message : 'Failed to import PDF.')
+      }
     }
   }
 
@@ -418,12 +516,13 @@ export function PDFViewer({
             Import PDF
           </button>
           {documentState ? <span className="document-meta">{documentState.record.title}</span> : null}
+          {documentState && viewerError ? <span className="document-import-error">{viewerError}</span> : null}
         </div>
         <input
           ref={fileInputRef}
           hidden
           type="file"
-          accept="application/pdf"
+          accept="application/pdf,.pdf"
           onChange={(event) => {
             const file = event.target.files?.[0]
             if (file) {
@@ -441,8 +540,10 @@ export function PDFViewer({
           onDrop={(event) => {
             event.preventDefault()
             const file = event.dataTransfer.files?.[0]
-            if (file?.type === 'application/pdf') {
+            if (isPdfFile(file)) {
               void importPdfFile(file)
+            } else if (file) {
+              setViewerError('Only PDF files are supported right now.')
             }
           }}
         >
@@ -517,6 +618,7 @@ export function PDFViewer({
                 registerCanvas={registerCanvas}
                 registerPage={registerPage}
                 onRendered={handlePageRendered}
+                onRenderError={handlePageRenderError}
               />
             ))}
 
@@ -551,7 +653,8 @@ function PdfPage({
   onEditAnchor,
   registerCanvas,
   registerPage,
-  onRendered
+  onRendered,
+  onRenderError
 }: {
   pdfDocument: any
   pageNumber: number
@@ -565,6 +668,7 @@ function PdfPage({
   registerCanvas: (pageNumber: number, canvas: HTMLCanvasElement | null) => void
   registerPage: (pageNumber: number, page: HTMLDivElement | null) => void
   onRendered: () => void
+  onRenderError: (pageNumber: number, error: unknown) => void
 }) {
   const HIGHLIGHT_CLICK_DELAY_MS = 220
   const pageRef = useRef<HTMLDivElement>(null)
@@ -810,6 +914,7 @@ function PdfPage({
         }
 
         console.error('[PDFViewer] failed to render page', pageNumber, error)
+        onRenderError(pageNumber, error)
       }
     }
 
