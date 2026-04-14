@@ -77,6 +77,7 @@ export function WorkspaceShell() {
   const [workspaceRect, setWorkspaceRect] = useState<DOMRect | null>(null)
   const [documentPaneRect, setDocumentPaneRect] = useState<DOMRect | null>(null)
   const [activeEdgeId, setActiveEdgeId] = useState<string | null>(null)
+  const [notesOpen, setNotesOpen] = useState(false)
   const [activeAnchorJumpKey, setActiveAnchorJumpKey] = useState(0)
 
   const excerptIndex = useMemo(() => new Map(excerpts.map((excerpt) => [excerpt.id, excerpt])), [excerpts])
@@ -828,6 +829,7 @@ export function WorkspaceShell() {
       canvasNodes.find((node) => node.sourceAnchorId === anchorId)?.selectionColor ??
       excerpts.find((excerpt) => excerpt.anchorId === anchorId)?.selectionColor ??
       bookmarks.find((bookmark) => bookmark.sourceAnchorId === anchorId)?.selectionColor ??
+      anchors.find((anchor) => anchor.id === anchorId)?.selectionColor ??
       '#5d5df6'
     )
   }
@@ -904,7 +906,16 @@ export function WorkspaceShell() {
           <div className="split-title">Document Intelligence Workspace</div>
           <strong>Selection → action popup → workspace node → linked navigation</strong>
         </div>
-        <div className="split-title">PDF.js • draggable workspace • SVG link layer</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <button
+            className="document-button"
+            type="button"
+            onClick={() => setNotesOpen((current) => !current)}
+          >
+            {notesOpen ? 'Hide Notes' : 'Notes'}
+          </button>
+          <div className="split-title">PDF.js • draggable workspace • SVG link layer</div>
+        </div>
       </header>
 
       <section ref={documentPaneRef} className="workspace-panel document-pane">
@@ -1148,13 +1159,15 @@ export function WorkspaceShell() {
         activeEdgeId={activeEdgeId}
       />
 
-      <aside className="workspace-notes-overlay">
-        <NoteEditor
-          note={activeNote}
-          excerpts={Array.from(excerptIndex.values())}
-          onNoteChange={setActiveNote}
-        />
-      </aside>
+      {notesOpen ? (
+        <aside className="workspace-notes-overlay">
+          <NoteEditor
+            note={activeNote}
+            excerpts={Array.from(excerptIndex.values())}
+            onNoteChange={setActiveNote}
+          />
+        </aside>
+      ) : null}
     </main>
   )
 }

@@ -30,6 +30,7 @@ export interface PageAnchor {
   quadPoints?: number[]
   viewportScale: number
   textQuote: string
+  selectionColor?: string
   tags?: string[]
   createdAt: string
   updatedAt: string

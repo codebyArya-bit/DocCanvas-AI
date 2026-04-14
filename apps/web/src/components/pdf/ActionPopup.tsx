@@ -129,7 +129,9 @@ export function ActionPopup({
             className="selection-action-pill"
             type="button"
             onClick={() => {
-              onTag(parsedTags)
+              const nextTags = parsedTags.length ? parsedTags : ['tag']
+              setTagDraft(nextTags.join(', '))
+              onTag(nextTags)
             }}
           >
             Tag

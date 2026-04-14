@@ -263,6 +263,11 @@ button, input, textarea {
   box-shadow: var(--shadow);
   overflow: hidden;
   backdrop-filter: blur(12px);
+  resize: both;
+  min-width: 280px;
+  min-height: 220px;
+  max-width: min(780px, 70vw);
+  max-height: min(720px, 70vh);
 }
 
 .document-pane {

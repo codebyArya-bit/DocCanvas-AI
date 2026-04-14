@@ -604,6 +604,7 @@ export function buildPageAnchor(input: SelectionArtifactInput): PageAnchor {
     quadPoints: input.quadPoints,
     viewportScale: input.viewportScale,
     textQuote: input.text,
+    selectionColor: input.selectionColor,
     tags: input.tags,
     createdAt: now,
     updatedAt: now
