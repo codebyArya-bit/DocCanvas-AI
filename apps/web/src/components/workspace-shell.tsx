@@ -758,6 +758,67 @@ export function WorkspaceShell() {
     })
   }
 
+  function normalizeSelectionText(input: string) {
+    return input.replace(/\s+/g, ' ').trim().toLowerCase()
+  }
+
+  function removeHighlightsByAnchorIds(anchorIds: string[]) {
+    const idsToRemove = new Set(anchorIds)
+    if (idsToRemove.size === 0) {
+      return
+    }
+
+    const nodesToRemove = canvasNodes.filter((entry) => entry.sourceAnchorId && idsToRemove.has(entry.sourceAnchorId))
+    const nodeIdsToRemove = new Set(nodesToRemove.map((node) => node.id))
+
+    const remainingNodes = canvasNodes.filter((entry) => !(entry.sourceAnchorId && idsToRemove.has(entry.sourceAnchorId)))
+    const remainingEdges = canvasEdges.filter(
+      (edge) => !idsToRemove.has(edge.sourceAnchorId) && !nodeIdsToRemove.has(edge.targetNodeId)
+    )
+    const remainingWorkspaceLinks = workspaceLinks.filter(
+      (link) => !nodeIdsToRemove.has(link.fromNodeId) && !nodeIdsToRemove.has(link.toNodeId)
+    )
+    const remainingBookmarks = bookmarks.filter((bookmark) => !idsToRemove.has(bookmark.sourceAnchorId))
+    const remainingAnchors = anchors.filter((anchor) => !idsToRemove.has(anchor.id))
+    const remainingExcerpts = excerpts.filter((excerpt) => !idsToRemove.has(excerpt.anchorId))
+
+    setCanvasNodes(remainingNodes)
+    setCanvasEdges(remainingEdges)
+    setWorkspaceLinks(remainingWorkspaceLinks)
+    setBookmarks(remainingBookmarks)
+    setAnchors(remainingAnchors)
+    setExcerpts(remainingExcerpts)
+
+    if (activeAnchorId && idsToRemove.has(activeAnchorId)) {
+      setActiveAnchorId(null)
+    }
+    if (activeNodeId && nodeIdsToRemove.has(activeNodeId)) {
+      setActiveNodeId(null)
+    }
+    setActiveEdgeId((current) => {
+      if (!current) {
+        return current
+      }
+      return remainingEdges.some((edge) => edge.id === current) ? current : null
+    })
+  }
+
+  function removeHighlightBySelectionIdentity(selection: SelectionArtifactInput, fallbackAnchorId: string) {
+    const normalizedText = normalizeSelectionText(selection.text)
+    const matches = anchors.filter((anchor) => {
+      if (anchor.documentId !== selection.documentId) return false
+      if (anchor.pageNumber !== selection.pageNumber) return false
+      if ((anchor.startSpanIndex ?? null) !== (selection.startSpanIndex ?? null)) return false
+      if ((anchor.startOffset ?? null) !== (selection.startOffset ?? null)) return false
+      if ((anchor.endSpanIndex ?? null) !== (selection.endSpanIndex ?? null)) return false
+      if ((anchor.endOffset ?? null) !== (selection.endOffset ?? null)) return false
+      return normalizeSelectionText(anchor.textQuote) === normalizedText
+    })
+
+    const ids = new Set<string>([fallbackAnchorId, ...matches.map((a) => a.id)])
+    removeHighlightsByAnchorIds(Array.from(ids))
+  }
+
   const clearFocusAll = () => {
     focusBoth(null, null, null)
   }
@@ -914,8 +975,8 @@ export function WorkspaceShell() {
           onRemoveExcerpt={(anchorId) => {
             removeExcerptByAnchorId(anchorId)
           }}
-          onRemoveHighlight={(anchorId) => {
-            removeHighlightByAnchorId(anchorId)
+          onRemoveHighlight={({ anchorId, selection }) => {
+            removeHighlightBySelectionIdentity(selection, anchorId)
           }}
           onTag={tagSelection}
           onSelectionChange={recolorSelection}

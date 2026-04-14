@@ -47,7 +47,7 @@ interface SelectionManagerProps {
   onComment: (payload: { selection: SelectionArtifactInput; viewportRatio: number }) => void
   onBookmark: (selection: SelectionArtifactInput) => void
   onRemoveExcerpt?: (anchorId: string) => void
-  onRemoveHighlight?: (anchorId: string) => void
+  onRemoveHighlight?: (payload: { anchorId: string; selection: SelectionArtifactInput }) => void
   onTag: (selection: SelectionArtifactInput, tags: string[]) => void
   onSelectionChange?: (selection: SelectionArtifactInput) => void
   onClearFocus?: () => void
@@ -436,7 +436,7 @@ export function SelectionManager({
     const excerpted = excerptedSet.has(popupState.anchorId)
     const undoAll = () => {
       if (onRemoveHighlight) {
-        onRemoveHighlight(popupState.anchorId)
+        onRemoveHighlight({ anchorId: popupState.anchorId, selection: popupState.selection })
         clearSelection()
         return
       }
@@ -484,7 +484,7 @@ export function SelectionManager({
         onRemoveHighlight={
           onRemoveHighlight
             ? () => {
-                onRemoveHighlight(popupState.anchorId)
+                onRemoveHighlight({ anchorId: popupState.anchorId, selection: popupState.selection })
                 clearSelection()
               }
             : undefined

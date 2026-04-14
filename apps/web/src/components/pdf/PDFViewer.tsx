@@ -194,7 +194,7 @@ interface PdfViewerProps {
   onComment: (payload: { selection: SelectionArtifactInput; viewportRatio: number }) => void
   onBookmark: (selection: SelectionArtifactInput) => void
   onRemoveExcerpt?: (anchorId: string) => void
-  onRemoveHighlight?: (anchorId: string) => void
+  onRemoveHighlight?: (payload: { anchorId: string; selection: SelectionArtifactInput }) => void
   onTag: (selection: SelectionArtifactInput, tags: string[]) => void
   onSelectionChange: (selection: SelectionArtifactInput) => void
   onOpenAnchor: (anchorId: string) => void
