@@ -656,6 +656,62 @@ export function WorkspaceShell() {
     })
   }
 
+  function removeExcerptByAnchorId(anchorId: string) {
+    const nodesToRemove = canvasNodes.filter((entry) => entry.kind === 'excerpt' && entry.sourceAnchorId === anchorId)
+    if (nodesToRemove.length === 0) {
+      return
+    }
+
+    const nodeIdsToRemove = new Set(nodesToRemove.map((node) => node.id))
+    const excerptIdsToConsider = new Set(nodesToRemove.map((node) => node.excerptId).filter(Boolean) as string[])
+    const remainingNodes = canvasNodes.filter((entry) => !nodeIdsToRemove.has(entry.id))
+    const remainingEdges = canvasEdges.filter((edge) => !nodeIdsToRemove.has(edge.targetNodeId))
+    const remainingWorkspaceLinks = workspaceLinks.filter(
+      (link) => !nodeIdsToRemove.has(link.fromNodeId) && !nodeIdsToRemove.has(link.toNodeId)
+    )
+
+    const excerptIdsToRemove = new Set<string>()
+    excerptIdsToConsider.forEach((excerptId) => {
+      if (!remainingNodes.some((entry) => entry.excerptId === excerptId)) {
+        excerptIdsToRemove.add(excerptId)
+      }
+    })
+
+    const remainingExcerpts = excerptIdsToRemove.size
+      ? excerpts.filter((excerpt) => !excerptIdsToRemove.has(excerpt.id))
+      : excerpts
+
+    const shouldRemoveAnchor =
+      !remainingNodes.some((entry) => entry.sourceAnchorId === anchorId) &&
+      !bookmarks.some((bookmark) => bookmark.sourceAnchorId === anchorId) &&
+      !remainingExcerpts.some((excerpt) => excerpt.anchorId === anchorId)
+
+    const remainingAnchors = shouldRemoveAnchor ? anchors.filter((anchor) => anchor.id !== anchorId) : anchors
+
+    setCanvasNodes(remainingNodes)
+    setCanvasEdges(remainingEdges)
+    setWorkspaceLinks(remainingWorkspaceLinks)
+    if (excerptIdsToRemove.size) {
+      setExcerpts(remainingExcerpts)
+    }
+    if (shouldRemoveAnchor) {
+      setAnchors(remainingAnchors)
+    }
+
+    if (activeNodeId && nodeIdsToRemove.has(activeNodeId)) {
+      setActiveNodeId(null)
+    }
+    if (activeAnchorId === anchorId) {
+      setActiveAnchorId(null)
+    }
+    setActiveEdgeId((current) => {
+      if (!current) {
+        return current
+      }
+      return remainingEdges.some((edge) => edge.id === current) ? current : null
+    })
+  }
+
   function resolveAnchorColor(anchorId: string) {
     return (
       canvasNodes.find((node) => node.sourceAnchorId === anchorId)?.selectionColor ??
@@ -803,6 +859,10 @@ export function WorkspaceShell() {
             setActiveAnchorId(anchor.id)
             const linkedNodeId = resolvePreferredNodeIdForAnchor(anchor.id)
             setActiveNodeId(linkedNodeId)
+          }}
+          onRemoveExcerpt={(selection) => {
+            const anchorId = buildPageAnchor(selection).id
+            removeExcerptByAnchorId(anchorId)
           }}
           onTag={tagSelection}
           onSelectionChange={recolorSelection}

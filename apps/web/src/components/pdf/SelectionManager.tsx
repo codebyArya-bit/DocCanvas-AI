@@ -39,11 +39,13 @@ interface SelectionManagerProps {
   workspaceId: string
   documentId: string
   bookmarkedAnchorIds?: string[]
+  excerptedAnchorIds?: string[]
   popupState?: SelectionPopupState | null
   onPopupStateChange?: (state: SelectionPopupState | null) => void
   onAutoExcerpt: (payload: { selection: SelectionArtifactInput; viewportRatio: number }) => void
   onComment: (payload: { selection: SelectionArtifactInput; viewportRatio: number }) => void
   onBookmark: (selection: SelectionArtifactInput) => void
+  onRemoveExcerpt?: (selection: SelectionArtifactInput) => void
   onTag: (selection: SelectionArtifactInput, tags: string[]) => void
   onSelectionChange?: (selection: SelectionArtifactInput) => void
 }
@@ -114,11 +116,13 @@ export function SelectionManager({
   workspaceId,
   documentId,
   bookmarkedAnchorIds,
+  excerptedAnchorIds,
   popupState: controlledPopupState,
   onPopupStateChange,
   onAutoExcerpt,
   onComment,
   onBookmark,
+  onRemoveExcerpt,
   onTag,
   onSelectionChange
 }: SelectionManagerProps) {
@@ -130,6 +134,7 @@ export function SelectionManager({
 
   const popupState = controlledPopupState ?? uncontrolledPopupState
   const bookmarkedSet = useMemo(() => new Set(bookmarkedAnchorIds ?? []), [bookmarkedAnchorIds])
+  const excerptedSet = useMemo(() => new Set(excerptedAnchorIds ?? []), [excerptedAnchorIds])
 
   const setPopupState = useCallback(
     (nextState: SelectionPopupState | null | ((current: SelectionPopupState | null) => SelectionPopupState | null)) => {
@@ -413,6 +418,21 @@ export function SelectionManager({
 
     const anchorId = buildPageAnchor(popupState.selection).id
     const bookmarked = bookmarkedSet.has(anchorId)
+    const excerpted = excerptedSet.has(anchorId)
+    const undoAll = () => {
+      if (popupState.tags.length > 0) {
+        const nextSelection = { ...popupState.selection, tags: [] }
+        setPopupState((current) => (current ? { ...current, selection: nextSelection, tags: [] } : current))
+        onTag(nextSelection, [])
+      }
+      if (bookmarked) {
+        onBookmark(popupState.selection)
+      }
+      if (excerpted && onRemoveExcerpt) {
+        onRemoveExcerpt(popupState.selection)
+      }
+      clearSelection()
+    }
 
     return (
       <ActionPopup
@@ -421,20 +441,25 @@ export function SelectionManager({
         selectionColor={popupState.selection.selectionColor}
         tags={popupState.tags}
         bookmarked={bookmarked}
+        excerpted={excerpted}
         interactive={!isSelecting}
         onSizeChange={setPopupSize}
         onAutoExcerpt={() => {
           onAutoExcerpt({ selection: popupState.selection, viewportRatio: popupState.viewportRatio })
-          dismiss()
         }}
         onComment={() => {
           onComment({ selection: popupState.selection, viewportRatio: popupState.viewportRatio })
-          dismiss()
         }}
         onBookmark={() => {
           onBookmark(popupState.selection)
-          dismiss()
         }}
+        onRemoveExcerpt={
+          excerpted && onRemoveExcerpt
+            ? () => {
+                onRemoveExcerpt(popupState.selection)
+              }
+            : undefined
+        }
         onTag={(tags) => {
           const nextSelection = { ...popupState.selection, tags }
           setPopupState((current) => (current ? { ...current, selection: nextSelection, tags } : current))
@@ -449,7 +474,6 @@ export function SelectionManager({
           setPopupState((current) => (current ? { ...current, selection: nextSelection, tags } : current))
           onTag(nextSelection, tags)
           onAutoExcerpt({ selection: nextSelection, viewportRatio: popupState.viewportRatio })
-          dismiss()
         }}
         onColorChange={(nextColor) => {
           const nextSelection =
@@ -476,9 +500,10 @@ export function SelectionManager({
           }
         }}
         onClearSelection={clearSelection}
+        onUndoAll={undoAll}
       />
     )
-  }, [bookmarkedSet, clearSelection, dismiss, onAutoExcerpt, onBookmark, onComment, onSelectionChange, onTag, popupState, setPopupState])
+  }, [bookmarkedSet, clearSelection, excerptedSet, isSelecting, onAutoExcerpt, onBookmark, onComment, onRemoveExcerpt, onSelectionChange, onTag, popupState, setPopupState])
 
   const overlayRects = useMemo(() => {
     const root = rootRef.current

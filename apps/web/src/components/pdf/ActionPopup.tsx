@@ -8,15 +8,18 @@ interface ActionPopupProps {
   tags: string[]
   selectionColor: string
   bookmarked: boolean
+  excerpted?: boolean
   interactive?: boolean
   onAutoExcerpt: () => void
   onComment: () => void
   onBookmark: () => void
+  onRemoveExcerpt?: () => void
   onTag: (tags: string[]) => void
   onCopy: () => void
   onAddDefinedTerm: () => void
   onColorChange: (nextColor: string) => void
   onClearSelection: () => void
+  onUndoAll?: () => void
   onSizeChange?: (size: { width: number; height: number }) => void
 }
 
@@ -28,15 +31,18 @@ export function ActionPopup({
   tags,
   selectionColor,
   bookmarked,
+  excerpted = false,
   interactive = true,
   onAutoExcerpt,
   onComment,
   onBookmark,
+  onRemoveExcerpt,
   onTag,
   onCopy,
   onAddDefinedTerm,
   onColorChange,
   onClearSelection,
+  onUndoAll,
   onSizeChange
 }: ActionPopupProps) {
   const popupRef = useRef<HTMLDivElement | null>(null)
@@ -96,7 +102,7 @@ export function ActionPopup({
         pointerEvents: interactive ? 'auto' : 'none'
       }}
     >
-      <div className="selection-action-content">
+      <div className="selection-action-header">
         <div className="selection-action-row">
           <button
             className="selection-action-pill selection-action-pill-primary"
@@ -112,6 +118,11 @@ export function ActionPopup({
           <button className="selection-action-pill" type="button" onClick={onBookmark}>
             {bookmarked ? 'Remove Bookmark' : 'Bookmark'}
           </button>
+          {excerpted && onRemoveExcerpt ? (
+            <button className="selection-action-pill" type="button" onClick={onRemoveExcerpt}>
+              Remove Excerpt
+            </button>
+          ) : null}
           <button
             className="selection-action-pill"
             type="button"
@@ -134,27 +145,43 @@ export function ActionPopup({
             </button>
             {moreOpen ? (
               <div className="selection-action-menu">
-                <button className="selection-action-menu-item" type="button" onClick={onCopy}>
-                  Copy
-                </button>
-                <button
-                  className="selection-action-menu-item"
-                  type="button"
-                  onClick={() => {
-                    onTag([])
-                    setMoreOpen(false)
-                  }}
-                >
-                  Clear Tags
-                </button>
-                <button className="selection-action-menu-item" type="button" onClick={onAddDefinedTerm}>
-                  Add Defined Term
-                </button>
+                <div className="selection-action-menu-inner">
+                  <button className="selection-action-menu-item" type="button" onClick={onCopy}>
+                    Copy
+                  </button>
+                  <button
+                    className="selection-action-menu-item"
+                    type="button"
+                    onClick={() => {
+                      onTag([])
+                      setMoreOpen(false)
+                    }}
+                  >
+                    Clear Tags
+                  </button>
+                  {onUndoAll ? (
+                    <button
+                      className="selection-action-menu-item"
+                      type="button"
+                      onClick={() => {
+                        onUndoAll()
+                        setMoreOpen(false)
+                      }}
+                    >
+                      Undo All
+                    </button>
+                  ) : null}
+                  <button className="selection-action-menu-item" type="button" onClick={onAddDefinedTerm}>
+                    Add Defined Term
+                  </button>
+                </div>
               </div>
             ) : null}
           </div>
         </div>
+      </div>
 
+      <div className="selection-action-content">
         <div className="selection-action-row selection-action-row-secondary">
           <div className="selection-action-swatches">
             {SWATCHES.map((swatch) => (

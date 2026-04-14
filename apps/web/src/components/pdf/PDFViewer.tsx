@@ -186,10 +186,19 @@ interface PdfViewerProps {
   onAutoExcerpt: (payload: { selection: SelectionArtifactInput; viewportRatio: number }) => void
   onComment: (payload: { selection: SelectionArtifactInput; viewportRatio: number }) => void
   onBookmark: (selection: SelectionArtifactInput) => void
+  onRemoveExcerpt?: (selection: SelectionArtifactInput) => void
   onTag: (selection: SelectionArtifactInput, tags: string[]) => void
   onSelectionChange: (selection: SelectionArtifactInput) => void
   onOpenAnchor: (anchorId: string) => void
   onAnchorMetricsChange: (metrics: Record<string, AnchorViewportMetric>) => void
+}
+
+function hueFromString(input: string) {
+  let hash = 0
+  for (let i = 0; i < input.length; i++) {
+    hash = (hash * 31 + input.charCodeAt(i)) | 0
+  }
+  return Math.abs(hash) % 360
 }
 
 export function PDFViewer({
@@ -205,6 +214,7 @@ export function PDFViewer({
   onAutoExcerpt,
   onComment,
   onBookmark,
+  onRemoveExcerpt,
   onTag,
   onSelectionChange,
   onOpenAnchor,
@@ -248,6 +258,7 @@ export function PDFViewer({
 
   const anchorIndex = useMemo(() => new Map(anchors.map((anchor) => [anchor.id, anchor])), [anchors])
   const bookmarkedAnchorIds = useMemo(() => bookmarks.map((bookmark) => bookmark.sourceAnchorId), [bookmarks])
+  const excerptedAnchorIds = useMemo(() => excerptNodes.map((node) => node.sourceAnchorId), [excerptNodes])
   const focusedAnchor = activeSourceFocus ? anchorIndex.get(activeSourceFocus.anchorId) ?? null : null
   const focusedAnchorId = focusedAnchor?.id ?? null
   const focusedAnchorPage = focusedAnchor?.pageNumber ?? null
@@ -704,11 +715,13 @@ export function PDFViewer({
               workspaceId={workspaceId}
               documentId={documentState.record.id}
               bookmarkedAnchorIds={bookmarkedAnchorIds}
+              excerptedAnchorIds={excerptedAnchorIds}
               popupState={popupState}
               onPopupStateChange={setPopupState}
               onAutoExcerpt={onAutoExcerpt}
               onComment={onComment}
               onBookmark={onBookmark}
+              onRemoveExcerpt={onRemoveExcerpt}
               onTag={onTag}
               onSelectionChange={onSelectionChange}
             />
@@ -1051,20 +1064,49 @@ function PdfPage({
       <canvas ref={canvasRef} className="document-page-canvas" />
       <div ref={textLayerRef} className="textLayer" />
       {pageHighlights.map((highlight) => (
-        <button
-          key={highlight.anchorId}
-          type="button"
-          className="document-highlight-button"
-          style={{
-            left: highlight.boundingBox.x * (viewportScale / (highlight.viewportScale || viewportScale)),
-            top: highlight.boundingBox.y * (viewportScale / (highlight.viewportScale || viewportScale)),
-            width: highlight.boundingBox.width * (viewportScale / (highlight.viewportScale || viewportScale)),
-            height: highlight.boundingBox.height * (viewportScale / (highlight.viewportScale || viewportScale)),
-            background: `${highlight.selectionColor}2d`,
-            borderColor: highlight.selectionColor,
-            pointerEvents: 'none'
-          }}
-        />
+        <div key={highlight.anchorId}>
+          <button
+            type="button"
+            className="document-highlight-button"
+            style={{
+              left: highlight.boundingBox.x * (viewportScale / (highlight.viewportScale || viewportScale)),
+              top: highlight.boundingBox.y * (viewportScale / (highlight.viewportScale || viewportScale)),
+              width: highlight.boundingBox.width * (viewportScale / (highlight.viewportScale || viewportScale)),
+              height: highlight.boundingBox.height * (viewportScale / (highlight.viewportScale || viewportScale)),
+              background: `${highlight.selectionColor}2d`,
+              borderColor: highlight.selectionColor,
+              pointerEvents: 'none'
+            }}
+          />
+          {highlight.tags?.length ? (
+            <div
+              className="document-tag-badges"
+              style={{
+                left: highlight.boundingBox.x * (viewportScale / (highlight.viewportScale || viewportScale)),
+                top:
+                  highlight.boundingBox.y * (viewportScale / (highlight.viewportScale || viewportScale)) -
+                  18
+              }}
+            >
+              {highlight.tags.slice(0, 3).map((tag) => {
+                const hue = hueFromString(tag)
+                return (
+                  <span
+                    key={tag}
+                    className="document-tag-badge"
+                    style={{
+                      background: `hsl(${hue} 78% 55%)`
+                    }}
+                    title={tag}
+                  >
+                    {tag.slice(0, 1).toUpperCase()}
+                  </span>
+                )
+              })}
+              {highlight.tags.length > 3 ? <span className="document-tag-badge document-tag-badge-more">+</span> : null}
+            </div>
+          ) : null}
+        </div>
       ))}
       {focusedAnchor && focusedColor ? (
         <div

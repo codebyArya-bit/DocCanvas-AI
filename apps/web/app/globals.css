@@ -80,12 +80,18 @@ button, input, textarea {
   touch-action: manipulation;
 }
 
+.selection-action-header {
+  position: relative;
+  z-index: 2;
+}
+
 .selection-action-content {
   max-height: min(48vh, 420px);
   overflow: auto;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
   padding-right: 2px;
+  padding-top: 12px;
 }
 
 .selection-action-row {
@@ -136,10 +142,17 @@ button, input, textarea {
   border: 1px solid rgba(125, 142, 171, 0.26);
   border-radius: 14px;
   box-shadow: 0 12px 24px rgba(33, 41, 54, 0.16);
-  overflow: hidden;
+  overflow: visible;
   z-index: 30;
   transform-origin: top right;
   animation: selection-menu-pop 140ms ease-out;
+  max-width: min(260px, calc(100vw - 40px));
+}
+
+.selection-action-menu-inner {
+  border-radius: 14px;
+  overflow: hidden;
+  background: white;
 }
 
 .selection-action-menu::before {
@@ -164,6 +177,33 @@ button, input, textarea {
   background: transparent;
   color: var(--text);
   cursor: pointer;
+  white-space: nowrap;
+}
+
+.document-tag-badges {
+  position: absolute;
+  z-index: 3;
+  display: flex;
+  gap: 6px;
+  pointer-events: none;
+}
+
+.document-tag-badge {
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 6px 12px rgba(33, 41, 54, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.55);
+}
+
+.document-tag-badge-more {
+  background: rgba(83, 103, 137, 0.62);
 }
 
 .selection-action-menu-item:hover {
