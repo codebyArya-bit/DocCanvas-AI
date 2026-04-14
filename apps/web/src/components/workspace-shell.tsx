@@ -445,8 +445,26 @@ export function WorkspaceShell() {
   }
 
   function recolorSelection(selection: SelectionArtifactInput) {
-    const anchorId = buildPageAnchor(selection).id
+    const anchor = buildPageAnchor(selection)
+    const anchorId = anchor.id
     const now = new Date().toISOString()
+
+    setAnchors((current) => {
+      const existing = current.find((item) => item.id === anchorId)
+      if (!existing) {
+        return [...current, anchor]
+      }
+
+      return current.map((item) =>
+        item.id === anchorId
+          ? {
+              ...item,
+              selectionColor: selection.selectionColor,
+              updatedAt: now
+            }
+          : item
+      )
+    })
 
     setExcerpts((current) =>
       current.map((excerpt) =>
@@ -508,6 +526,20 @@ export function WorkspaceShell() {
 
     const now = new Date().toISOString()
     if (updates.selectionColor) {
+      if (node.sourceAnchorId) {
+        setAnchors((current) =>
+          current.map((anchor) =>
+            anchor.id === node.sourceAnchorId
+              ? {
+                  ...anchor,
+                  selectionColor: updates.selectionColor!,
+                  updatedAt: now
+                }
+              : anchor
+          )
+        )
+      }
+
       setCanvasNodes((current) =>
         current.map((entry) =>
           entry.id === nodeId

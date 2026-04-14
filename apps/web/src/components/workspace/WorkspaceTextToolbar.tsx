@@ -82,14 +82,21 @@ export function WorkspaceTextToolbar({
         <button type="button" onClick={onPromoteChild}>To Child Workspace</button>
         <button type="button" onClick={onDelete}>Delete</button>
         <div className="workspace-text-toolbar-tag-wrap">
-          <button type="button" onClick={() => onTagsChange(parsedTags.length ? parsedTags : node.tags ?? [])}>Tags</button>
+          <button
+            type="button"
+            onClick={() => {
+              const nextTags = parsedTags.length ? parsedTags : node.tags?.length ? node.tags : ['tag']
+              setTagsDraft(nextTags.join(', '))
+              onTagsChange(nextTags)
+            }}
+          >
+            Tags
+          </button>
           <input
             value={tagsDraft}
             onChange={(event) => setTagsDraft(event.target.value)}
             onBlur={() => {
-              if (parsedTags.length) {
-                onTagsChange(parsedTags)
-              }
+              onTagsChange(parsedTags)
             }}
             placeholder={(node.tags ?? []).join(', ') || 'tags'}
           />
