@@ -811,7 +811,8 @@ export function WorkspaceShell() {
               sourceAnchorId: n.sourceAnchorId!,
               title: n.title ?? 'Excerpt',
               text: n.text ?? '',
-              selectionColor: n.selectionColor ?? '#ffd400'
+              selectionColor: n.selectionColor ?? '#ffd400',
+              tags: n.tags ?? []
             }))}
           activeSourceFocus={
             activeAnchorId

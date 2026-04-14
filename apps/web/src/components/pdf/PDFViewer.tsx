@@ -176,7 +176,14 @@ interface PdfViewerProps {
   anchors: PageAnchor[]
   highlightedAnchors: HighlightDescriptor[]
   bookmarks: Bookmark[]
-  excerptNodes: { id: string; sourceAnchorId: string; title: string; text: string; selectionColor: string }[]
+  excerptNodes: {
+    id: string
+    sourceAnchorId: string
+    title: string
+    text: string
+    selectionColor: string
+    tags?: string[]
+  }[]
   activeSourceFocus: {
     anchorId: string
     selectionColor: string
@@ -660,8 +667,18 @@ export function PDFViewer({
                     title={node.text}
                   >
                     <span className="bookmark-chip" style={{ background: node.selectionColor }} />
-                    <span style={{ fontSize: 12, lineHeight: 1.4, overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
-                      {node.text || node.title}
+                    <span className="bookmark-item-body">
+                      <span className="bookmark-item-title">{node.text || node.title}</span>
+                      {node.tags?.length ? (
+                        <span className="bookmark-item-tags">
+                          {node.tags.slice(0, 3).map((tag) => (
+                            <span key={tag} className="bookmark-item-tag">
+                              {tag}
+                            </span>
+                          ))}
+                          {node.tags.length > 3 ? <span className="bookmark-item-tag">+{node.tags.length - 3}</span> : null}
+                        </span>
+                      ) : null}
                     </span>
                   </button>
                 ))
@@ -682,7 +699,19 @@ export function PDFViewer({
                       onClick={() => onOpenAnchor(bookmark.sourceAnchorId)}
                     >
                       <span className="bookmark-chip" style={{ background: bookmark.selectionColor }} />
-                      <span>{bookmark.bookmarkLabel}</span>
+                      <span className="bookmark-item-body">
+                        <span className="bookmark-item-title">{bookmark.bookmarkLabel}</span>
+                        {bookmark.tags?.length ? (
+                          <span className="bookmark-item-tags">
+                            {bookmark.tags.slice(0, 3).map((tag) => (
+                              <span key={tag} className="bookmark-item-tag">
+                                {tag}
+                              </span>
+                            ))}
+                            {bookmark.tags.length > 3 ? <span className="bookmark-item-tag">+{bookmark.tags.length - 3}</span> : null}
+                          </span>
+                        ) : null}
+                      </span>
                     </button>
                   ))
               )}
@@ -1025,7 +1054,7 @@ function PdfPage({
       }
       registerCanvas(pageNumber, null)
     }
-  }, [pageNumber, pdfDocument, registerCanvas, onRendered])
+  }, [pageNumber, pdfDocument, registerCanvas, onRendered, onRenderError, viewportScale])
 
   return (
     <div
