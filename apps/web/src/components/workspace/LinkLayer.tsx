@@ -11,6 +11,9 @@ interface LinkLayerProps {
   anchorMetrics: Record<string, AnchorViewportMetric>
   nodes: CanvasNode[]
   edges: CanvasEdge[]
+  workspacePanX: number
+  workspacePanY: number
+  workspaceZoom: number
   activeAnchorId: string | null
   activeEdgeId: string | null
 }
@@ -38,6 +41,9 @@ export function LinkLayer({
   anchorMetrics,
   nodes,
   edges,
+  workspacePanX,
+  workspacePanY,
+  workspaceZoom,
   activeAnchorId,
   activeEdgeId
 }: LinkLayerProps) {
@@ -47,6 +53,22 @@ export function LinkLayer({
     }
 
     const nodeIndex = new Map(nodes.map((node) => [node.id, node]))
+    const nodeArrowIndex = new Map<string, { x: number; y: number }>()
+
+    // Prefer measuring the actual rendered arrow tip element in the DOM.
+    // This stays correct through pan/zoom (CSS transforms) and when node styling changes.
+    if (typeof document !== 'undefined') {
+      const arrowButtons = document.querySelectorAll<HTMLElement>('[data-node-arrow-id]')
+      arrowButtons.forEach((button) => {
+        const nodeId = button.getAttribute('data-node-arrow-id')
+        if (!nodeId) {
+          return
+        }
+        const rect = button.getBoundingClientRect()
+        // Use the outward-most point (left edge) so the curve visibly "emanates" from the projection.
+        nodeArrowIndex.set(nodeId, { x: rect.left, y: rect.top + rect.height / 2 })
+      })
+    }
 
     return edges.flatMap((edge) => {
       const anchor = anchorMetrics[edge.sourceAnchorId]
@@ -55,37 +77,29 @@ export function LinkLayer({
         return []
       }
 
-      const cardTopVP = workspaceRect.top + node.y
-      const cardMidVP = cardTopVP + Math.min(node.height / 2, 48)
-      const arrowTipVP = workspaceRect.left + node.x - 20
+      const measuredArrow = nodeArrowIndex.get(node.id) ?? null
+      const nodeArrowTipVP = measuredArrow
+        ? measuredArrow.x
+        : workspaceRect.left + workspacePanX + node.x * workspaceZoom
+      const nodeArrowMidVP = measuredArrow
+        ? measuredArrow.y
+        : workspaceRect.top + workspacePanY + node.y * workspaceZoom + 40 * workspaceZoom
 
       if (
-        arrowTipVP < workspaceRect.left - 28 ||
-        arrowTipVP > workspaceRect.right ||
-        cardMidVP < workspaceRect.top ||
-        cardMidVP > workspaceRect.bottom
+        nodeArrowTipVP < workspaceRect.left - 28 ||
+        nodeArrowTipVP > workspaceRect.right ||
+        nodeArrowMidVP < workspaceRect.top ||
+        nodeArrowMidVP > workspaceRect.bottom
       ) {
         return []
       }
-      const anchorRect =
-        anchor.rects.reduce<typeof anchor.rects[number] | null>((best, rect) => {
-          if (!best) {
-            return rect
-          }
-
-          const bestMidVP = shellRect.top + best.y + best.height / 2
-          const rectMidVP = shellRect.top + rect.y + rect.height / 2
-          return Math.abs(rectMidVP - cardMidVP) < Math.abs(bestMidVP - cardMidVP) ? rect : best
-        }, null) ?? { x: anchor.x, y: anchor.y, width: anchor.width, height: anchor.height }
-
-      const anchorRightVP = shellRect.left + anchorRect.x + anchorRect.width
-      const anchorMidVP = shellRect.top + anchorRect.y + anchorRect.height / 2
+      // Anchor endpoint comes from the real rendered page marker DOM (measured in AnchorService.measureAnchorMetric).
+      const anchorMarginVP = shellRect.left + anchor.centerX
+      const anchorMidVP = shellRect.top + anchor.centerY
 
       if (
         anchorMidVP < documentPaneRect.top + 16 ||
-        anchorMidVP > documentPaneRect.bottom - 16 ||
-        anchorRightVP < documentPaneRect.left + 16 ||
-        anchorRightVP > documentPaneRect.right - 16
+        anchorMidVP > documentPaneRect.bottom - 16
       ) {
         return []
       }
@@ -99,16 +113,28 @@ export function LinkLayer({
           color: edge.color ?? node.selectionColor ?? '#5d5df6',
           kind: edge.kind ?? 'auto',
           controlBias: edge.controlBias ?? 0.42,
-          x1: anchorRightVP,
+          x1: anchorMarginVP,
           y1: anchorMidVP,
-          x2: arrowTipVP,
-          y2: cardMidVP,
-          anchorDotX: anchorRightVP,
+          x2: nodeArrowTipVP,
+          y2: nodeArrowMidVP,
+          anchorDotX: anchorMarginVP,
           anchorDotY: anchorMidVP
         }
       ]
     })
-  }, [activeAnchorId, activeEdgeId, anchorMetrics, documentPaneRect, edges, nodes, shellRect, workspaceRect])
+  }, [
+    activeAnchorId,
+    activeEdgeId,
+    anchorMetrics,
+    documentPaneRect,
+    edges,
+    nodes,
+    shellRect,
+    workspacePanX,
+    workspacePanY,
+    workspaceRect,
+    workspaceZoom
+  ])
 
   if (!shellRect || lines.length === 0) {
     return null

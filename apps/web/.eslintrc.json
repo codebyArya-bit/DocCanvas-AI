@@ -1,0 +1,5 @@
+{
+  "extends": ["next/core-web-vitals", "next/typescript"],
+  "ignorePatterns": ["src/components/workspace/WorkspaceSelectionToolbar.backup.tsx"]
+}
+

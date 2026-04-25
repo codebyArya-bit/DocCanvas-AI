@@ -1,5 +1,6 @@
 import type { BoundingBox, PageAnchor } from '@workspace/domain'
 import type { SelectionArtifactInput } from '../../lib/excerpts/pdf-selection'
+import { resolveAnchorClientRects } from '../../lib/excerpts/pdf-selection'
 
 export interface AnchorRect {
   x: number
@@ -25,6 +26,11 @@ export interface AnchorViewportMetric {
   centerX: number
   centerY: number
   rects: AnchorRect[]
+}
+
+export interface LiveAnchorElements {
+  startSpan: HTMLElement | null
+  endSpan: HTMLElement | null
 }
 
 function toRect(box: BoundingBox): AnchorRect {
@@ -81,6 +87,27 @@ export function buildAnchorRects(anchor: PageAnchor): AnchorRect[] {
   return rects.length > 0 ? rects : [toRect(anchor.boundingBox)]
 }
 
+export function getLiveAnchorElements(pageElement: HTMLElement, anchor: Pick<PageAnchor, 'startSpanIndex' | 'endSpanIndex'>): LiveAnchorElements {
+  const textLayer = pageElement.querySelector<HTMLElement>('.textLayer')
+  if (!textLayer) {
+    return {
+      startSpan: null,
+      endSpan: null
+    }
+  }
+
+  return {
+    startSpan:
+      anchor.startSpanIndex == null
+        ? null
+        : textLayer.querySelector<HTMLElement>(`span[data-text-index="${anchor.startSpanIndex}"]`),
+    endSpan:
+      anchor.endSpanIndex == null
+        ? null
+        : textLayer.querySelector<HTMLElement>(`span[data-text-index="${anchor.endSpanIndex}"]`)
+  }
+}
+
 export function measureAnchorMetric(
   anchor: PageAnchor,
   pageElement: HTMLElement | null,
@@ -90,15 +117,52 @@ export function measureAnchorMetric(
     return null
   }
 
-  const pageRect = pageElement.getBoundingClientRect()
-  const anchorRects = buildAnchorRects(anchor)
-  if (anchorRects.length === 0) {
+  // Prefer the actual rendered gutter marker position over text geometry.
+  // This makes SVG link endpoints stable across zoom/rerender and matches what the user sees.
+  const esc = typeof CSS !== 'undefined' && typeof CSS.escape === 'function' ? CSS.escape : null
+  const marker =
+    (esc
+      ? pageElement.querySelector<HTMLButtonElement>(
+          `button.page-anchor-indicator-right[data-anchor-id="${esc(anchor.id)}"]`
+        ) ??
+        pageElement.querySelector<HTMLButtonElement>(`button.page-anchor-indicator[data-anchor-id="${esc(anchor.id)}"]`)
+      : null) ??
+    null
+  const resolvedMarker =
+    marker ??
+    Array.from(
+      pageElement.querySelectorAll<HTMLButtonElement>(
+        'button.page-anchor-indicator-right[data-anchor-id], button.page-anchor-indicator[data-anchor-id]'
+      )
+    ).find((button) => button.dataset.anchorId === anchor.id) ??
+    null
+
+  if (resolvedMarker) {
+    const rect = resolvedMarker.getBoundingClientRect()
+    const x = rect.left - shellRect.left
+    const y = rect.top - shellRect.top
+    const width = rect.width
+    const height = rect.height
+    return {
+      anchorId: anchor.id,
+      x,
+      y,
+      width,
+      height,
+      centerX: x + width / 2,
+      centerY: y + height / 2,
+      rects: [{ x, y, width, height }]
+    }
+  }
+
+  const liveRects = resolveAnchorClientRects(pageElement, anchor)
+  if (liveRects.length === 0) {
     return null
   }
 
-  const viewportRects = anchorRects.map((rect) => ({
-    x: pageRect.left - shellRect.left + rect.x,
-    y: pageRect.top - shellRect.top + rect.y,
+  const viewportRects = liveRects.map((rect) => ({
+    x: rect.left - shellRect.left,
+    y: rect.top - shellRect.top,
     width: rect.width,
     height: rect.height
   }))

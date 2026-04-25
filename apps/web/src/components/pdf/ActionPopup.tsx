@@ -8,23 +8,21 @@ interface ActionPopupProps {
   tags: string[]
   selectionColor: string
   bookmarked: boolean
-  excerpted?: boolean
   interactive?: boolean
   onAutoExcerpt: () => void
   onComment: () => void
   onBookmark: () => void
-  onRemoveExcerpt?: () => void
-  onRemoveHighlight?: () => void
   onTag: (tags: string[]) => void
+  onClearTags: () => void
   onCopy: () => void
   onAddDefinedTerm: () => void
   onColorChange: (nextColor: string) => void
   onClearSelection: () => void
-  onUndoAll?: () => void
   onSizeChange?: (size: { width: number; height: number }) => void
 }
 
 const SWATCHES = ['#ff6b6b', '#2ecc71', '#5d5df6', '#ffd400', '#db38ff', '#00b8d9']
+const STANDARD_TAGS = ['important', 'question', 'evidence', 'counterpoint', 'defined-term', 'follow-up']
 
 export function ActionPopup({
   left,
@@ -32,19 +30,16 @@ export function ActionPopup({
   tags,
   selectionColor,
   bookmarked,
-  excerpted = false,
   interactive = true,
   onAutoExcerpt,
   onComment,
   onBookmark,
-  onRemoveExcerpt,
-  onRemoveHighlight,
   onTag,
+  onClearTags,
   onCopy,
   onAddDefinedTerm,
   onColorChange,
   onClearSelection,
-  onUndoAll,
   onSizeChange
 }: ActionPopupProps) {
   const popupRef = useRef<HTMLDivElement | null>(null)
@@ -120,11 +115,6 @@ export function ActionPopup({
           <button className="selection-action-pill" type="button" onClick={onBookmark}>
             {bookmarked ? 'Remove Bookmark' : 'Bookmark'}
           </button>
-          {excerpted && onRemoveExcerpt ? (
-            <button className="selection-action-pill" type="button" onClick={onRemoveExcerpt}>
-              Remove Excerpt
-            </button>
-          ) : null}
           <button
             className="selection-action-pill"
             type="button"
@@ -157,36 +147,12 @@ export function ActionPopup({
                     className="selection-action-menu-item"
                     type="button"
                     onClick={() => {
-                      onTag([])
+                      onClearTags()
                       setMoreOpen(false)
                     }}
                   >
                     Clear Tags
                   </button>
-                {onRemoveHighlight ? (
-                  <button
-                    className="selection-action-menu-item"
-                    type="button"
-                    onClick={() => {
-                      onRemoveHighlight()
-                      setMoreOpen(false)
-                    }}
-                  >
-                    Remove Highlight
-                  </button>
-                ) : null}
-                  {onUndoAll ? (
-                    <button
-                      className="selection-action-menu-item"
-                      type="button"
-                      onClick={() => {
-                        onUndoAll()
-                        setMoreOpen(false)
-                      }}
-                    >
-                      Undo All
-                    </button>
-                  ) : null}
                   <button className="selection-action-menu-item" type="button" onClick={onAddDefinedTerm}>
                     Add Defined Term
                   </button>
@@ -219,20 +185,27 @@ export function ActionPopup({
             <input
               value={tagDraft}
               onChange={(event) => setTagDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  onTag(parsedTags)
+                }
+              }}
               onBlur={() => onTag(parsedTags)}
               placeholder="market, idea"
             />
           </label>
         </div>
 
-        {normalizedTags.length > 0 ? (
-          <div className="selection-action-row selection-action-row-secondary" style={{ paddingTop: 0 }}>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+        <div className="selection-action-tag-summary" aria-live="polite">
+          <div className="selection-action-tag-summary-label">Allocated tags</div>
+          {normalizedTags.length > 0 ? (
+            <div className="selection-action-tag-bar" aria-label="Tags allocated to selected text">
               {normalizedTags.map((tag) => (
                 <button
                   key={tag}
                   type="button"
-                  className="selection-action-pill"
+                  className="selection-action-tag-chip is-active"
                   onClick={() => {
                     const next = normalizedTags.filter((t) => t !== tag)
                     setTagDraft(next.join(', '))
@@ -243,8 +216,29 @@ export function ActionPopup({
                 </button>
               ))}
             </div>
+          ) : (
+            <div className="selection-action-tag-empty">No tags allocated</div>
+          )}
+          <div className="selection-action-tag-presets" aria-label="Suggested tags">
+            {STANDARD_TAGS.map((tag) => {
+              const active = normalizedTags.includes(tag)
+              return (
+                <button
+                  key={tag}
+                  type="button"
+                  className={`selection-action-tag-preset${active ? ' is-active' : ''}`}
+                  onClick={() => {
+                    const next = active ? normalizedTags.filter((item) => item !== tag) : [...normalizedTags, tag]
+                    setTagDraft(next.join(', '))
+                    onTag(next)
+                  }}
+                >
+                  #{tag}
+                </button>
+              )
+            })}
           </div>
-        ) : null}
+        </div>
       </div>
     </div>
   )

@@ -17,6 +17,7 @@ declare module 'tldraw' {
       title: string
       text: string
       selectionColor: string
+      nodeColor?: string
       w: number
       h: number
     }
@@ -26,6 +27,7 @@ declare module 'tldraw' {
       title: string
       text: string
       selectionColor: string
+      nodeColor?: string
       w: number
       h: number
     }
@@ -41,6 +43,7 @@ const sharedProps = {
   title: T.string,
   text: T.string,
   selectionColor: T.string,
+  nodeColor: T.string,
   w: T.number,
   h: T.number
 }
@@ -62,18 +65,19 @@ function dispatchCommentTextChange(nodeId: string, text: string) {
 }
 
 function renderCard(shape: ExcerptCardShape | CommentCardShape, background: string) {
+  const nodeColor = shape.props.nodeColor || shape.props.selectionColor
   return (
     <HTMLContainer
       style={{
         width: shape.props.w,
         height: shape.props.h,
         background,
-        border: `2px solid ${shape.props.selectionColor}`,
+        border: `2px solid ${nodeColor}`,
         borderRadius: 18,
         padding: '12px 16px',
         color: '#201c16',
         boxShadow: '0 12px 26px rgba(45, 45, 45, 0.16)',
-        pointerEvents: 'none',
+        pointerEvents: 'auto',
         display: 'flex',
         flexDirection: 'column',
         position: 'relative'
@@ -89,7 +93,7 @@ function renderCard(shape: ExcerptCardShape | CommentCardShape, background: stri
           height: 0,
           borderTop: '12px solid transparent',
           borderBottom: '12px solid transparent',
-          borderRight: `16px solid ${shape.props.selectionColor}`
+          borderRight: `16px solid ${nodeColor}`
         }}
       />
       <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: 8 }}>
@@ -121,6 +125,7 @@ export class ExcerptCardShapeUtil extends BaseBoxShapeUtil<ExcerptCardShape> {
       title: '',
       text: '',
       selectionColor: '#ffd400',
+      nodeColor: '#ffd400',
       w: 320,
       h: 168
     }
@@ -150,6 +155,7 @@ export class CommentCardShapeUtil extends BaseBoxShapeUtil<CommentCardShape> {
       title: 'Comment',
       text: '',
       selectionColor: '#5d5df6',
+      nodeColor: '#5d5df6',
       w: 320,
       h: 210
     }
@@ -160,7 +166,7 @@ export class CommentCardShapeUtil extends BaseBoxShapeUtil<CommentCardShape> {
   }
 
   override component(shape: CommentCardShape) {
-    const accentColor = shape.props.selectionColor || '#5d5df6'
+    const accentColor = shape.props.nodeColor || shape.props.selectionColor || '#5d5df6'
     return (
       <HTMLContainer
         style={{
@@ -172,7 +178,7 @@ export class CommentCardShapeUtil extends BaseBoxShapeUtil<CommentCardShape> {
           padding: '0',
           color: '#201c16',
           boxShadow: '0 12px 26px rgba(45, 45, 45, 0.18)',
-          pointerEvents: 'none',
+          pointerEvents: 'auto',
           display: 'flex',
           flexDirection: 'column',
           position: 'relative'

@@ -12,21 +12,62 @@ import { measureAnchorMetric, type AnchorViewportMetric } from './AnchorService'
 import { clampPopupPosition } from './AnchorService'
 import { SelectionManager, type SelectionPopupState } from './SelectionManager'
 
-let pdfModulePromise: Promise<any> | null = null
+type PdfLoadingTaskLike = {
+  promise: Promise<PdfDocumentLike>
+  destroy?: () => Promise<void> | void
+}
+
+type PdfDocumentLike = {
+  numPages: number
+  getPage: (pageNumber: number) => Promise<PdfPageLike>
+  destroy?: () => Promise<void> | void
+}
+
+type PdfPageLike = {
+  getViewport: (params: { scale: number }) => { width: number; height: number }
+  render: (params: {
+    canvasContext: CanvasRenderingContext2D
+    viewport: { width: number; height: number }
+    intent?: string
+  }) => PdfRenderTaskLike
+  getTextContent: () => Promise<unknown>
+  cleanup?: () => void
+}
+
+type PdfRenderTaskLike = {
+  promise: Promise<void>
+  cancel: () => void
+}
+
+type PdfTextLayerTaskLike = {
+  render: () => Promise<void>
+  cancel?: () => void
+}
+
+type PdfJsModuleLike = {
+  version: string
+  GlobalWorkerOptions: { workerSrc: string }
+  getDocument: (params: { data: Uint8Array; disableWorker?: boolean }) => PdfLoadingTaskLike
+  TextLayer: new (params: {
+    textContentSource: unknown
+    container: HTMLElement
+    viewport: { width: number; height: number }
+  }) => PdfTextLayerTaskLike
+}
+
+let pdfModulePromise: Promise<PdfJsModuleLike> | null = null
 let pdfModuleConfigured = false
 
 async function loadPdfModule() {
   if (!pdfModulePromise) {
-    pdfModulePromise = import('pdfjs-dist/legacy/build/pdf.mjs')
+    pdfModulePromise = import('pdfjs-dist/legacy/build/pdf.mjs') as unknown as Promise<PdfJsModuleLike>
   }
 
   const pdfjs = await pdfModulePromise
   if (!pdfModuleConfigured) {
     pdfModuleConfigured = true
-    try {
-      const workerUrl = new URL('pdfjs-dist/legacy/build/pdf.worker.mjs', import.meta.url)
-      pdfjs.GlobalWorkerOptions.workerSrc = workerUrl.toString()
-    } catch {}
+    pdfjs.GlobalWorkerOptions.workerSrc =
+      `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjs.version}/legacy/build/pdf.worker.min.mjs`
   }
 
   return pdfjs
@@ -34,8 +75,8 @@ async function loadPdfModule() {
 
 class PdfDocumentController {
   private chain: Promise<void> = Promise.resolve()
-  private activeTask: any = null
-  private activeDocument: any = null
+  private activeTask: PdfLoadingTaskLike | null = null
+  private activeDocument: PdfDocumentLike | null = null
 
   private async destroyCurrent() {
     const task = this.activeTask
@@ -46,7 +87,9 @@ class PdfDocumentController {
 
     if (task) {
       try {
-        await task.destroy()
+        if (task.destroy) {
+          await task.destroy()
+        }
       } catch {}
       return
     }
@@ -58,16 +101,17 @@ class PdfDocumentController {
     }
   }
 
-  private async openWithFallback(pdfjs: any, bytes: Uint8Array, preferDisableWorker: boolean) {
-    const baseOptions: any = { data: bytes }
-    const options = preferDisableWorker ? { ...baseOptions, disableWorker: true } : baseOptions
-    let task: any = null
+  private async openWithFallback(pdfjs: PdfJsModuleLike, bytes: Uint8Array, preferDisableWorker: boolean) {
+    const baseOptions = { data: bytes }
+    const firstOptions = preferDisableWorker ? { ...baseOptions, disableWorker: true } : baseOptions
+    const secondOptions = preferDisableWorker ? baseOptions : { ...baseOptions, disableWorker: true }
+    let task: PdfLoadingTaskLike | null = null
 
     try {
-      task = pdfjs.getDocument(options)
+      task = pdfjs.getDocument(firstOptions)
       const document = await task.promise
       return { task, document }
-    } catch (error: any) {
+    } catch (error: unknown) {
       if (task?.destroy) {
         try {
           await task.destroy()
@@ -75,23 +119,25 @@ class PdfDocumentController {
       }
 
       const message = error instanceof Error ? error.message : String(error)
+      const errorName = (error as { name?: unknown } | null)?.name
       const looksLikeWorkerFailure =
-        error?.name === 'UnknownErrorException' ||
+        errorName === 'UnknownErrorException' ||
         /worker/i.test(message) ||
         /Setting up fake worker failed/i.test(message) ||
-        /Failed to fetch dynamically imported module/i.test(message)
+        /Failed to fetch dynamically imported module/i.test(message) ||
+        /Object\.defineProperty called on non-object/i.test(message)
 
-      if (!preferDisableWorker && looksLikeWorkerFailure) {
-        task = pdfjs.getDocument({ ...baseOptions, disableWorker: true })
-        const document = await task.promise
-        return { task, document }
+      if (!preferDisableWorker && !looksLikeWorkerFailure) {
+        throw error
       }
 
-      throw error
+      task = pdfjs.getDocument(secondOptions)
+      const document = await task.promise
+      return { task, document }
     }
   }
 
-  load(bytes: Uint8Array, onSuccess: (doc: any) => void, onError: (message: string) => void): () => void {
+  load(bytes: Uint8Array, onSuccess: (doc: PdfDocumentLike) => void, onError: (message: string) => void): () => void {
     let cancelled = false
     this.chain = this.chain.then(async () => {
       await this.destroyCurrent()
@@ -114,16 +160,17 @@ class PdfDocumentController {
 
         this.activeDocument = document
         onSuccess(document)
-      } catch (error: any) {
+      } catch (error: unknown) {
         await this.destroyCurrent()
-        if (cancelled || error?.name === 'AbortException') {
+        const errorName = (error as { name?: unknown } | null)?.name
+        if (cancelled || errorName === 'AbortException') {
           return
         }
-        if (error?.name === 'PasswordException') {
+        if (errorName === 'PasswordException') {
           onError('This PDF is password-protected and cannot be opened.')
           return
         }
-        if (error?.name === 'InvalidPDFException') {
+        if (errorName === 'InvalidPDFException') {
           onError('This file is not a valid PDF.')
           return
         }
@@ -148,11 +195,49 @@ const pdfController = new PdfDocumentController()
 export interface HighlightDescriptor {
   anchorId: string
   pageNumber: number
+  startSpanIndex?: number
+  startOffset?: number
+  endSpanIndex?: number
+  endOffset?: number
   boundingBox: PageAnchor['boundingBox']
   quadPoints?: number[]
   viewportScale?: number
   selectionColor: string
   tags?: string[]
+  showHighlight?: boolean
+  showMarker?: boolean
+}
+
+function buildRectsFromQuadPoints(highlight: HighlightDescriptor, viewportScale: number) {
+  if (!highlight.quadPoints || highlight.quadPoints.length < 8) {
+    return []
+  }
+
+  const ratio = viewportScale / (highlight.viewportScale || viewportScale)
+  const rects: Array<{ key: string; left: number; top: number; width: number; height: number }> = []
+  for (let index = 0; index < highlight.quadPoints.length; index += 8) {
+    const quad = highlight.quadPoints.slice(index, index + 8)
+    if (quad.length < 8) {
+      continue
+    }
+
+    const xs = [quad[0], quad[2], quad[4], quad[6]]
+    const ys = [quad[1], quad[3], quad[5], quad[7]]
+    const left = Math.min(...xs) * ratio
+    const top = Math.min(...ys) * ratio
+    const right = Math.max(...xs) * ratio
+    const bottom = Math.max(...ys) * ratio
+
+    rects.push({
+      key: `${highlight.anchorId}-quad-${index / 8}`,
+      left,
+      top,
+      width: right - left,
+      height: bottom - top
+    })
+  }
+
+  return rects
 }
 
 function indexTextLayerSpans(textLayer: HTMLElement) {
@@ -176,7 +261,7 @@ interface PdfViewerProps {
   anchors: PageAnchor[]
   highlightedAnchors: HighlightDescriptor[]
   bookmarks: Bookmark[]
-  excerptNodes: {
+  linkedNodes: {
     id: string
     sourceAnchorId: string
     title: string
@@ -184,6 +269,12 @@ interface PdfViewerProps {
     selectionColor: string
     tags?: string[]
   }[]
+  activeTag: string | null
+  pageZoom: number
+  availableTags: string[]
+  onPageZoomChange: (zoom: number) => void
+  onToggleTag: (tag: string) => void
+  onClearTagFilter: () => void
   activeSourceFocus: {
     anchorId: string
     selectionColor: string
@@ -217,7 +308,13 @@ export function PDFViewer({
   anchors,
   highlightedAnchors,
   bookmarks,
-  excerptNodes,
+  linkedNodes,
+  activeTag,
+  pageZoom,
+  availableTags,
+  onPageZoomChange,
+  onToggleTag,
+  onClearTagFilter,
   activeSourceFocus,
   onDocumentImported,
   onAutoExcerpt,
@@ -235,13 +332,13 @@ export function PDFViewer({
   const fileInputRef = useRef<HTMLInputElement>(null)
   const pageCanvasMapRef = useRef(new Map<number, HTMLCanvasElement>())
   const pageElementMapRef = useRef(new Map<number, HTMLElement>())
-  const [pdfDocument, setPdfDocument] = useState<any>(null)
+  const measureFrameRef = useRef<number | null>(null)
+  const [pdfDocument, setPdfDocument] = useState<PdfDocumentLike | null>(null)
   const [viewerError, setViewerError] = useState<string | null>(null)
   const [popupState, setPopupState] = useState<SelectionPopupState | null>(null)
   const [pageRenderTick, setPageRenderTick] = useState(0)
-  const [zoom, setZoom] = useState(1)
   const baseViewportScale = 1.35
-  const viewportScale = useMemo(() => Number((baseViewportScale * zoom).toFixed(3)), [zoom])
+  const viewportScale = useMemo(() => Number((baseViewportScale * pageZoom).toFixed(3)), [pageZoom])
   const handlePageRendered = useCallback(() => {
     setPageRenderTick((current) => current + 1)
   }, [])
@@ -269,12 +366,17 @@ export function PDFViewer({
 
   const anchorIndex = useMemo(() => new Map(anchors.map((anchor) => [anchor.id, anchor])), [anchors])
   const bookmarkedAnchorIds = useMemo(() => bookmarks.map((bookmark) => bookmark.sourceAnchorId), [bookmarks])
-  const excerptedAnchorIds = useMemo(() => excerptNodes.map((node) => node.sourceAnchorId), [excerptNodes])
+  const linkedAnchorIds = useMemo(() => linkedNodes.map((node) => node.sourceAnchorId), [linkedNodes])
   const focusedAnchor = activeSourceFocus ? anchorIndex.get(activeSourceFocus.anchorId) ?? null : null
-  const focusedAnchorId = focusedAnchor?.id ?? null
-  const focusedAnchorPage = focusedAnchor?.pageNumber ?? null
-  const focusedAnchorY = focusedAnchor?.boundingBox.y ?? null
-  const focusedAnchorHeight = focusedAnchor?.boundingBox.height ?? null
+  const activeTagMatches = useMemo(
+    () =>
+      activeTag
+        ? highlightedAnchors
+            .map((highlight) => anchorIndex.get(highlight.anchorId))
+            .filter((anchor): anchor is PageAnchor => Boolean(anchor))
+        : [],
+    [activeTag, anchorIndex, highlightedAnchors]
+  )
   const focusJumpKey = activeSourceFocus?.jumpKey ?? 0
 
   useEffect(() => {
@@ -355,7 +457,7 @@ export function PDFViewer({
       cancelled = true
       window.clearTimeout(retryId)
     }
-  }, [focusJumpKey, focusedAnchorHeight, focusedAnchorId, focusedAnchorPage, focusedAnchorY])
+  }, [focusJumpKey, focusedAnchor])
 
   const openAnchorPopup = useCallback(
     (anchorId: string) => {
@@ -409,8 +511,7 @@ export function PDFViewer({
           boundingBox: anchor.boundingBox,
           quadPoints: anchor.quadPoints,
           viewportScale: anchor.viewportScale,
-          selectionColor:
-            highlightedAnchors.find((item) => item.anchorId === anchorId)?.selectionColor ?? '#5d5df6',
+          selectionColor: anchor.selectionColor ?? highlightedAnchors.find((item) => item.anchorId === anchorId)?.selectionColor ?? '#5d5df6',
           tags: anchor.tags ?? []
         },
         left: popupPosition.left + root.scrollLeft,
@@ -447,7 +548,14 @@ export function PDFViewer({
     }
 
     const scheduleMeasure = () => {
-      requestAnimationFrame(measure)
+      if (measureFrameRef.current != null) {
+        return
+      }
+
+      measureFrameRef.current = requestAnimationFrame(() => {
+        measureFrameRef.current = null
+        measure()
+      })
     }
 
     scheduleMeasure()
@@ -455,10 +563,14 @@ export function PDFViewer({
     window.addEventListener('resize', scheduleMeasure)
 
     return () => {
+      if (measureFrameRef.current != null) {
+        cancelAnimationFrame(measureFrameRef.current)
+        measureFrameRef.current = null
+      }
       root.removeEventListener('scroll', scheduleMeasure)
       window.removeEventListener('resize', scheduleMeasure)
     }
-  }, [anchors, documentState, onAnchorMetricsChange, pageRenderTick, shellRef])
+  }, [anchors, documentState, onAnchorMetricsChange, pageRenderTick, shellRef, viewportScale])
 
   const isPdfFile = useCallback((file: File | null | undefined) => {
     if (!file) return false
@@ -468,9 +580,9 @@ export function PDFViewer({
   }, [])
 
   const clampZoom = useCallback((next: number) => Math.max(0.6, Math.min(3, Number(next.toFixed(2)))), [])
-  const zoomIn = useCallback(() => setZoom((current) => clampZoom(current + 0.1)), [clampZoom])
-  const zoomOut = useCallback(() => setZoom((current) => clampZoom(current - 0.1)), [clampZoom])
-  const zoomReset = useCallback(() => setZoom(1), [])
+  const zoomIn = useCallback(() => onPageZoomChange(clampZoom(pageZoom + 0.1)), [clampZoom, onPageZoomChange, pageZoom])
+  const zoomOut = useCallback(() => onPageZoomChange(clampZoom(pageZoom - 0.1)), [clampZoom, onPageZoomChange, pageZoom])
+  const zoomReset = useCallback(() => onPageZoomChange(1), [onPageZoomChange])
 
   useEffect(() => {
     const root = rootRef.current
@@ -485,40 +597,22 @@ export function PDFViewer({
 
       event.preventDefault()
       if (event.deltaY < 0) {
-        setZoom((current) => clampZoom(current + 0.1))
+        onPageZoomChange(clampZoom(pageZoom + 0.1))
       } else if (event.deltaY > 0) {
-        setZoom((current) => clampZoom(current - 0.1))
+        onPageZoomChange(clampZoom(pageZoom - 0.1))
       }
     }
 
-    root.addEventListener('wheel', onWheel, { passive: false })
-    return () => root.removeEventListener('wheel', onWheel as any)
-  }, [clampZoom])
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (!event.ctrlKey && !event.metaKey) {
-        return
-      }
-
-      if (event.key === '+' || event.key === '=') {
-        event.preventDefault()
-        zoomIn()
-      } else if (event.key === '-') {
-        event.preventDefault()
-        zoomOut()
-      } else if (event.key === '0') {
-        event.preventDefault()
-        zoomReset()
-      }
+    const wheelListener: EventListener = (event) => {
+      onWheel(event as WheelEvent)
     }
 
-    document.addEventListener('keydown', onKeyDown)
-    return () => document.removeEventListener('keydown', onKeyDown)
-  }, [zoomIn, zoomOut, zoomReset])
+    root.addEventListener('wheel', wheelListener, { passive: false })
+    return () => root.removeEventListener('wheel', wheelListener)
+  }, [clampZoom, onPageZoomChange, pageZoom])
 
   async function importPdfFile(file: File) {
-    let loadingTask: any = null
+    let loadingTask: PdfLoadingTaskLike | null = null
 
     try {
       if (!isPdfFile(file)) {
@@ -531,16 +625,19 @@ export function PDFViewer({
       const viewerBytes = sourceBytes.slice()
       const storedBytes = sourceBytes.slice()
       loadingTask = pdfjs.getDocument({ data: viewerBytes })
-      let pdf: any = null
+      let pdf: PdfDocumentLike | null = null
       try {
         pdf = await loadingTask.promise
-      } catch (error: any) {
+      } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error)
+        const errorName = (error as { name?: unknown } | null)?.name
         const looksLikeWorkerFailure =
-          error?.name === 'UnknownErrorException' ||
+          errorName === 'UnknownErrorException' ||
           /worker/i.test(message) ||
           /Setting up fake worker failed/i.test(message) ||
-          /Failed to fetch dynamically imported module/i.test(message)
+          /Failed to fetch dynamically imported module/i.test(message) ||
+          /Object\.defineProperty called on non-object/i.test(message)
+
         if (!looksLikeWorkerFailure) {
           throw error
         }
@@ -556,7 +653,9 @@ export function PDFViewer({
       }
       const now = new Date().toISOString()
 
-      await loadingTask.destroy()
+      if (loadingTask?.destroy) {
+        await loadingTask.destroy()
+      }
       loadingTask = null
 
       onDocumentImported({
@@ -582,7 +681,7 @@ export function PDFViewer({
         } catch {}
       }
 
-      const err = error as any
+      const err = error as { name?: unknown } | null
       if (err?.name === 'PasswordException') {
         setViewerError('This PDF is password-protected and cannot be opened.')
       } else if (err?.name === 'InvalidPDFException') {
@@ -604,14 +703,14 @@ export function PDFViewer({
           {documentState ? <span className="document-meta">{documentState.record.title}</span> : null}
           {documentState && viewerError ? <span className="document-import-error">{viewerError}</span> : null}
           {documentState && pdfDocument ? (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <button className="document-button" type="button" onClick={zoomOut}>
+            <div className="document-page-zoom-controls" aria-label="Page zoom controls">
+              <button className="document-button" type="button" onClick={zoomOut} title="Zoom out page" aria-label="Zoom out page">
                 -
               </button>
-              <button className="document-button" type="button" onClick={zoomReset}>
-                {Math.round(zoom * 100)}%
+              <button className="document-button document-page-zoom-reset" type="button" onClick={zoomReset} title="Reset page zoom" aria-label="Reset page zoom">
+                Page {Math.round(pageZoom * 100)}%
               </button>
-              <button className="document-button" type="button" onClick={zoomIn}>
+              <button className="document-button" type="button" onClick={zoomIn} title="Zoom in page" aria-label="Zoom in page">
                 +
               </button>
             </div>
@@ -660,10 +759,10 @@ export function PDFViewer({
           <aside className="document-rail">
             <div className="document-rail-section">
               <div className="split-title">Excerpts</div>
-              {excerptNodes.length === 0 ? (
+              {linkedNodes.length === 0 ? (
                 <div className="document-empty-copy">No excerpts yet.</div>
               ) : (
-                excerptNodes.map((node) => (
+                linkedNodes.map((node) => (
                   <button
                     key={node.id}
                     className="bookmark-item"
@@ -721,6 +820,53 @@ export function PDFViewer({
                   ))
               )}
             </div>
+            <div className="document-rail-section" style={{ marginTop: 16 }}>
+              <div className="split-title">Tags</div>
+              {availableTags.length === 0 ? (
+                <div className="document-empty-copy">No tags yet.</div>
+              ) : (
+                <div className="document-tag-filter-list">
+                  {availableTags.map((tag) => (
+                    <button
+                      key={tag}
+                      type="button"
+                      className={`document-tag-filter-chip${activeTag === tag ? ' is-active' : ''}`}
+                      onClick={() => onToggleTag(tag)}
+                    >
+                      #{tag}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    className="document-tag-filter-clear"
+                    onClick={onClearTagFilter}
+                    disabled={!activeTag}
+                  >
+                    Clear Filter
+                  </button>
+                </div>
+              )}
+              {activeTag ? (
+                <div className="document-tag-match-list" aria-live="polite">
+                  <div className="document-tag-match-heading">Tagged text</div>
+                  {activeTagMatches.length === 0 ? (
+                    <div className="document-empty-copy">No source sentence tagged with #{activeTag}.</div>
+                  ) : (
+                    activeTagMatches.map((anchor) => (
+                      <button
+                        key={anchor.id}
+                        type="button"
+                        className="document-tag-match-item"
+                        onClick={() => onOpenAnchor(anchor.id)}
+                      >
+                        <span className="document-tag-match-page">Page {anchor.pageNumber}</span>
+                        <span>{anchor.textQuote}</span>
+                      </button>
+                    ))
+                  )}
+                </div>
+              ) : null}
+            </div>
           </aside>
 
           <div ref={rootRef} className="document-scroll">
@@ -741,6 +887,8 @@ export function PDFViewer({
                 onRendered={handlePageRendered}
                 onRenderError={handlePageRenderError}
                 viewportScale={viewportScale}
+                activeTag={activeTag}
+                onToggleTag={onToggleTag}
               />
             ))}
 
@@ -749,7 +897,7 @@ export function PDFViewer({
               workspaceId={workspaceId}
               documentId={documentState.record.id}
               bookmarkedAnchorIds={bookmarkedAnchorIds}
-              excerptedAnchorIds={excerptedAnchorIds}
+              linkedAnchorIds={linkedAnchorIds}
               popupState={popupState}
               onPopupStateChange={setPopupState}
               onAutoExcerpt={onAutoExcerpt}
@@ -782,9 +930,11 @@ function PdfPage({
   registerPage,
   onRendered,
   onRenderError,
-  viewportScale
+  viewportScale,
+  activeTag,
+  onToggleTag
 }: {
-  pdfDocument: any
+  pdfDocument: PdfDocumentLike
   pageNumber: number
   pageHighlights: HighlightDescriptor[]
   focusedAnchor: PageAnchor | null
@@ -798,14 +948,17 @@ function PdfPage({
   onRendered: () => void
   onRenderError: (pageNumber: number, error: unknown) => void
   viewportScale: number
+  activeTag: string | null
+  onToggleTag: (tag: string) => void
 }) {
   const HIGHLIGHT_CLICK_DELAY_MS = 220
   const pageRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const textLayerRef = useRef<HTMLDivElement>(null)
-  const renderTaskRef = useRef<any>(null)
-  const textLayerTaskRef = useRef<any>(null)
+  const renderTaskRef = useRef<PdfRenderTaskLike | null>(null)
+  const textLayerTaskRef = useRef<PdfTextLayerTaskLike | null>(null)
   const pendingOpenRef = useRef<number | null>(null)
+  const [highlightRenderTick, setHighlightRenderTick] = useState(0)
 
   useEffect(() => {
     registerPage(pageNumber, pageRef.current)
@@ -827,6 +980,120 @@ function PdfPage({
     moved: false,
     selectionChanged: false
   })
+
+  const marginAnchors = useMemo(() => {
+    const pageElement = pageRef.current
+    if (!pageElement) {
+      return []
+    }
+
+    const pageRect = pageElement.getBoundingClientRect()
+    return pageHighlights
+      .filter((highlight) => highlight.showMarker !== false)
+      .map((highlight) => {
+        const rects = resolveAnchorClientRects(pageElement, {
+          ...highlight,
+          viewportScale: highlight.viewportScale ?? viewportScale
+        })
+        const firstRect = rects[0]
+        if (!firstRect) {
+          return null
+        }
+
+        return {
+          anchorId: highlight.anchorId,
+          top: firstRect.top - pageRect.top + firstRect.height / 2 - 5,
+          color: highlight.selectionColor
+        }
+      })
+      .filter((item): item is { anchorId: string; top: number; color: string } => Boolean(item))
+  }, [pageHighlights, viewportScale])
+
+  const renderedHighlights = useMemo(() => {
+    void highlightRenderTick
+    const pageElement = pageRef.current
+    if (!pageElement) {
+      return []
+    }
+
+    const pageRect = pageElement.getBoundingClientRect()
+    return pageHighlights.map((highlight) => {
+      const quadRects = buildRectsFromQuadPoints(highlight, viewportScale)
+      const liveRects =
+        quadRects.length === 0
+          ? resolveAnchorClientRects(pageElement, {
+              ...highlight,
+              viewportScale: highlight.viewportScale ?? viewportScale
+            })
+          : []
+
+      const rects = quadRects.length
+        ? quadRects
+        : liveRects.length > 0
+          ? liveRects.map((rect, index) => ({
+              key: `${highlight.anchorId}-${index}`,
+              left: rect.left - pageRect.left,
+              top: rect.top - pageRect.top,
+              width: rect.width,
+              height: rect.height
+            }))
+          : [
+              {
+                key: `${highlight.anchorId}-fallback`,
+                left: highlight.boundingBox.x * (viewportScale / (highlight.viewportScale || viewportScale)),
+                top: highlight.boundingBox.y * (viewportScale / (highlight.viewportScale || viewportScale)),
+                width: highlight.boundingBox.width * (viewportScale / (highlight.viewportScale || viewportScale)),
+                height: highlight.boundingBox.height * (viewportScale / (highlight.viewportScale || viewportScale))
+              }
+            ]
+
+      return {
+        ...highlight,
+        rects
+      }
+    })
+  }, [highlightRenderTick, pageHighlights, viewportScale])
+
+  const findHighlightByTextIndex = useCallback(
+    (textIndex: number) => {
+      for (let i = pageHighlights.length - 1; i >= 0; i--) {
+        const highlight = pageHighlights[i]
+        if (highlight.startSpanIndex == null || highlight.endSpanIndex == null) {
+          continue
+        }
+
+        const start = Math.min(highlight.startSpanIndex, highlight.endSpanIndex)
+        const end = Math.max(highlight.startSpanIndex, highlight.endSpanIndex)
+        if (textIndex >= start && textIndex <= end) {
+          return highlight.anchorId
+        }
+      }
+
+      return null
+    },
+    [pageHighlights]
+  )
+
+  const findHighlightFromTarget = useCallback(
+    (target: EventTarget | null) => {
+      if (!(target instanceof HTMLElement)) {
+        return null
+      }
+
+      const textSpan = target.closest<HTMLElement>('.textLayer span[data-text-index]')
+      if (!textSpan) {
+        return null
+      }
+
+      const textIndex = Number(textSpan.dataset.textIndex)
+      if (!Number.isFinite(textIndex)) {
+        return null
+      }
+
+      return findHighlightByTextIndex(textIndex)
+    },
+    [findHighlightByTextIndex]
+  )
 
   const findHighlightAtPoint = useCallback(
     (x: number, y: number) => {
@@ -875,11 +1142,12 @@ function PdfPage({
 
     const x = event.clientX - rect.left
     const y = event.clientY - rect.top
+    const targetAnchorId = findHighlightFromTarget(event.target)
     gestureRef.current = {
       pointerId: event.pointerId,
       startX: x,
       startY: y,
-      candidateAnchorId: event.detail > 1 ? null : findHighlightAtPoint(x, y),
+      candidateAnchorId: event.detail > 1 ? null : targetAnchorId ?? findHighlightAtPoint(x, y),
       moved: false,
       selectionChanged: false
     }
@@ -930,7 +1198,6 @@ function PdfPage({
 
     const anchorId = gesture.candidateAnchorId
     resetGesture()
-
     if (shouldOpen && anchorId) {
       pendingOpenRef.current = window.setTimeout(() => {
         pendingOpenRef.current = null
@@ -1031,13 +1298,15 @@ function PdfPage({
           return
         }
         indexTextLayerSpans(currentTextLayer)
+        setHighlightRenderTick((current) => current + 1)
         onRendered()
-      } catch (error: any) {
+      } catch (error: unknown) {
         if (
           cancelled ||
-          error?.name === 'RenderingCancelledException' ||
-          error?.name === 'AbortException' ||
-          error?.name === 'UnknownErrorException'
+          (error instanceof Error &&
+            (error.name === 'RenderingCancelledException' ||
+              error.name === 'AbortException' ||
+              error.name === 'UnknownErrorException'))
         ) {
           return
         }
@@ -1063,6 +1332,10 @@ function PdfPage({
     }
   }, [pageNumber, pdfDocument, registerCanvas, onRendered, onRenderError, viewportScale])
 
+  useEffect(() => {
+    setHighlightRenderTick((current) => current + 1)
+  }, [pageHighlights, viewportScale])
+
   return (
     <div
       ref={pageRef}
@@ -1076,6 +1349,19 @@ function PdfPage({
       onPointerCancel={resetGesture}
     >
       <div className="page-bookmark-margin">
+        {marginAnchors.map((anchor) => (
+          <button
+            key={`anchor-${anchor.anchorId}`}
+            type="button"
+            className="page-anchor-indicator"
+            data-anchor-id={anchor.anchorId}
+            style={{
+              top: anchor.top,
+              background: anchor.color
+            }}
+            onClick={() => onOpenAnchor(anchor.anchorId)}
+          />
+        ))}
         {pageBookmarks.map((bookmark) => {
           const anchor = bookmarkAnchors.get(bookmark.sourceAnchorId)
           if (!anchor) {
@@ -1097,23 +1383,44 @@ function PdfPage({
           )
         })}
       </div>
+      <div className="page-anchor-margin page-anchor-margin-right">
+        {marginAnchors.map((anchor) => (
+          <button
+            key={`anchor-right-${anchor.anchorId}`}
+            type="button"
+            className="page-anchor-indicator page-anchor-indicator-right"
+            data-anchor-id={anchor.anchorId}
+            style={{
+              top: anchor.top,
+              background: anchor.color
+            }}
+            onClick={() => onOpenAnchor(anchor.anchorId)}
+          />
+        ))}
+      </div>
       <canvas ref={canvasRef} className="document-page-canvas" />
       <div ref={textLayerRef} className="textLayer" />
-      {pageHighlights.map((highlight) => (
+      {renderedHighlights.map((highlight) => (
         <div key={highlight.anchorId}>
-          <button
-            type="button"
-            className="document-highlight-button"
-            style={{
-              left: highlight.boundingBox.x * (viewportScale / (highlight.viewportScale || viewportScale)),
-              top: highlight.boundingBox.y * (viewportScale / (highlight.viewportScale || viewportScale)),
-              width: highlight.boundingBox.width * (viewportScale / (highlight.viewportScale || viewportScale)),
-              height: highlight.boundingBox.height * (viewportScale / (highlight.viewportScale || viewportScale)),
-              background: `${highlight.selectionColor}2d`,
-              borderColor: highlight.selectionColor,
-              pointerEvents: 'none'
-            }}
-          />
+          {highlight.showHighlight !== false
+            ? highlight.rects.map((rect) => (
+            <button
+              key={rect.key}
+              type="button"
+              className={`document-highlight-button${activeTag ? ' is-tag-filtered' : ''}`}
+              style={{
+                left: rect.left,
+                top: rect.top,
+                width: rect.width,
+                height: rect.height,
+                background: `${highlight.selectionColor}2d`,
+                borderColor: highlight.selectionColor
+              }}
+              title="Open selection actions"
+              onClick={() => onEditAnchor(highlight.anchorId)}
+            />
+              ))
+            : null}
           {highlight.tags?.length ? (
             <div
               className="document-tag-badges"
@@ -1127,16 +1434,21 @@ function PdfPage({
               {highlight.tags.slice(0, 3).map((tag) => {
                 const hue = hueFromString(tag)
                 return (
-                  <span
+                  <button
                     key={tag}
-                    className="document-tag-badge"
+                    type="button"
+                    className={`document-tag-badge${activeTag === tag ? ' is-active' : ''}`}
                     style={{
                       background: `hsl(${hue} 78% 55%)`
                     }}
                     title={tag}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      onToggleTag(tag)
+                    }}
                   >
                     {tag.slice(0, 1).toUpperCase()}
-                  </span>
+                  </button>
                 )
               })}
               {highlight.tags.length > 3 ? <span className="document-tag-badge document-tag-badge-more">+</span> : null}

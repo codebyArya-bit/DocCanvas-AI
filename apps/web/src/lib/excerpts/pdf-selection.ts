@@ -35,21 +35,6 @@ function buildUnionRect(rects: DOMRect[]): DOMRect | null {
   return new DOMRect(left, top, right - left, bottom - top)
 }
 
-function samplePointWithinRect(rect: DOMRect) {
-  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0
-  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0
-  const x = Math.min(
-    Math.max(rect.left + Math.min(4, Math.max(1, rect.width / 2)), 1),
-    Math.max(1, viewportWidth - 1)
-  )
-  const y = Math.min(
-    Math.max(rect.top + Math.min(4, Math.max(1, rect.height / 2)), 1),
-    Math.max(1, viewportHeight - 1)
-  )
-
-  return { x, y }
-}
-
 function dedupeRects(rects: DOMRect[]) {
   const seen = new Set<string>()
   return rects.filter((rect) => {
@@ -103,19 +88,7 @@ export function getVisibleSelectionClientRects(
             rect.top < pageRect.bottom &&
             rect.bottom > pageRect.top
         )
-
-  const visibleRects = rawRects.filter((rect) => {
-    const { x, y } = samplePointWithinRect(rect)
-    const element = document.elementFromPoint(x, y)
-    if (!element) {
-      return false
-    }
-
-    const ownerTextLayer = element.closest('.textLayer')
-    return ownerTextLayer === targetTextLayer
-  })
-
-  return dedupeRects(visibleRects)
+  return dedupeRects(rawRects)
 }
 
 function closestFromNode(node: Node | null, selector: string) {
@@ -355,6 +328,11 @@ function collectSelectedSpanSlices(
       continue
     }
 
+    // Skip whitespace-only spans; they generate "empty" highlight boxes and unstable geometry.
+    if ((span.textContent ?? '').trim().length === 0) {
+      continue
+    }
+
     const startOffset = indexValue === startBoundary?.index ? startBoundary.offset : 0
     const endOffset = indexValue === endBoundary?.index ? endBoundary.offset : textLength
     const normalizedStart = Math.max(0, Math.min(startOffset, endOffset))
@@ -411,6 +389,10 @@ function buildRectsFromIndexedSpans(
 
     const textLength = getSpanTextLength(span)
     if (!textLength) {
+      continue
+    }
+
+    if ((span.textContent ?? '').trim().length === 0) {
       continue
     }
 
@@ -517,7 +499,52 @@ export function capturePdfSelection(root: HTMLElement): PdfSelection | null {
   }
 
   const pageRect = page.getBoundingClientRect()
-  const clientRects = getVisibleSelectionClientRects(range, textLayer, page)
+  const clientRectsRaw = getVisibleSelectionClientRects(range, textLayer, page)
+
+  const mergeNearbyRects = (rects: DOMRect[]) => {
+    if (rects.length === 0) return rects
+
+    const sorted = [...rects].sort((left, right) => {
+      if (left.top === right.top) return left.left - right.left
+      return left.top - right.top
+    })
+
+    const merged: DOMRect[] = []
+    let current = sorted[0]
+
+    for (let index = 1; index < sorted.length; index += 1) {
+      const next = sorted[index]
+
+      const currentMidY = (current.top + current.bottom) / 2
+      const nextMidY = (next.top + next.bottom) / 2
+      const sameLineThreshold = Math.max(2, Math.min(current.height, next.height) * 0.6)
+      const sameLine = Math.abs(nextMidY - currentMidY) <= sameLineThreshold
+
+      const gap = next.left - current.right
+      const gapThreshold = Math.max(2, current.height * 0.55)
+      const closeEnough = gap <= gapThreshold
+
+      if (sameLine && closeEnough) {
+        const left = Math.min(current.left, next.left)
+        const top = Math.min(current.top, next.top)
+        const right = Math.max(current.right, next.right)
+        const bottom = Math.max(current.bottom, next.bottom)
+        current = new DOMRect(left, top, right - left, bottom - top)
+        continue
+      }
+
+      merged.push(current)
+      current = next
+    }
+
+    merged.push(current)
+    return merged
+  }
+
+  // Keep the browser's selection rects, but drop tiny noise rectangles and merge
+  // adjacent rects on the same line to avoid per-character/per-span boxes.
+  const clientRectsSized = clientRectsRaw.filter((rect) => rect.width > 1 && rect.height > 1)
+  const clientRects = mergeNearbyRects(clientRectsSized.length > 0 ? clientRectsSized : clientRectsRaw)
   const unionRect = buildUnionRect(clientRects)
   if (!unionRect || clientRects.length === 0) {
     return null

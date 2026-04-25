@@ -1,6 +1,9 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
+    "jsx": "preserve",
+    "strict": true,
+    "moduleResolution": "node",
     "plugins": [
       {
         "name": "next"

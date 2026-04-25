@@ -6,6 +6,17 @@ import { buildPageAnchor, capturePdfSelection, getVisibleSelectionClientRects } 
 import { ActionPopup } from './ActionPopup'
 import { clampPopupPosition } from './AnchorService'
 
+const WORKSPACE_INTERACTION_SELECTOR = [
+  '.workspace-pane',
+  '.workspace-node',
+  '.workspace-textbox-toolbar',
+  '.workspace-textbox-editor',
+  '.workspace-tool-rail',
+  '.workspace-tool-btn',
+  '[data-node-editor="true"]',
+  '[contenteditable="true"]'
+].join(', ')
+
 export interface SelectionPopupState {
   anchorId: string
   selection: SelectionArtifactInput
@@ -40,7 +51,7 @@ interface SelectionManagerProps {
   workspaceId: string
   documentId: string
   bookmarkedAnchorIds?: string[]
-  excerptedAnchorIds?: string[]
+  linkedAnchorIds?: string[]
   popupState?: SelectionPopupState | null
   onPopupStateChange?: (state: SelectionPopupState | null) => void
   onAutoExcerpt: (payload: { selection: SelectionArtifactInput; viewportRatio: number }) => void
@@ -70,6 +81,28 @@ function getSelectionRect(): DOMRect | null {
   const right = Math.max(...rects.map((rect) => rect.right))
   const bottom = Math.max(...rects.map((rect) => rect.bottom))
   return new DOMRect(left, top, right - left, bottom - top)
+}
+
+function getSelectionRootNode(selection: Selection | null): Node | null {
+  if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+    return null
+  }
+
+  return selection.getRangeAt(0).commonAncestorContainer
+}
+
+function nodeToElement(node: Node | null): Element | null {
+  if (!node) {
+    return null
+  }
+
+  return node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node.parentElement
+}
+
+export function shouldPreserveWorkspaceFocusForPointerTarget(
+  target: Pick<HTMLElement, 'closest'> | null | undefined
+) {
+  return Boolean(target?.closest(WORKSPACE_INTERACTION_SELECTOR))
 }
 
 function buildSelectionRects(root: HTMLDivElement, selection: SelectionArtifactInput): SelectionRect[] {
@@ -119,7 +152,7 @@ export function SelectionManager({
   workspaceId,
   documentId,
   bookmarkedAnchorIds,
-  excerptedAnchorIds,
+  linkedAnchorIds,
   popupState: controlledPopupState,
   onPopupStateChange,
   onAutoExcerpt,
@@ -139,7 +172,7 @@ export function SelectionManager({
 
   const popupState = controlledPopupState ?? uncontrolledPopupState
   const bookmarkedSet = useMemo(() => new Set(bookmarkedAnchorIds ?? []), [bookmarkedAnchorIds])
-  const excerptedSet = useMemo(() => new Set(excerptedAnchorIds ?? []), [excerptedAnchorIds])
+  const linkedSet = useMemo(() => new Set(linkedAnchorIds ?? []), [linkedAnchorIds])
 
   const setPopupState = useCallback(
     (nextState: SelectionPopupState | null | ((current: SelectionPopupState | null) => SelectionPopupState | null)) => {
@@ -160,7 +193,7 @@ export function SelectionManager({
 
   const dismiss = useCallback(() => {
     setPopupState(null)
-  }, [])
+  }, [setPopupState])
 
   const clearSelection = useCallback(() => {
     try {
@@ -169,25 +202,64 @@ export function SelectionManager({
     setLoupeState(null)
     setPopupState(null)
     onClearFocus?.()
-  }, [setPopupState])
+  }, [onClearFocus, setPopupState])
+
+  useEffect(() => {
+    document.body.classList.toggle('is-selecting-pdf-text', isSelecting)
+    return () => {
+      document.body.classList.remove('is-selecting-pdf-text')
+    }
+  }, [isSelecting])
 
   const updateLoupe = useCallback(() => {
     const root = rootRef.current
-    const selectionRect = getSelectionRect()
     const selection = document.getSelection()
     const text = selection?.toString().replace(/\s+/g, ' ').trim() ?? ''
-    if (!root || !selectionRect || !text) {
+    if (!root || !selection || selection.rangeCount === 0 || !text) {
+      setLoupeState(null)
+      return
+    }
+
+    const range = selection.getRangeAt(0)
+    const commonAncestor = getSelectionRootNode(selection)
+    const commonAncestorElement = nodeToElement(commonAncestor)
+    const startElement = nodeToElement(range.startContainer)
+    const endElement = nodeToElement(range.endContainer)
+    const belongsToRoot =
+      (commonAncestorElement && root.contains(commonAncestorElement)) ||
+      (startElement && root.contains(startElement)) ||
+      (endElement && root.contains(endElement))
+
+    if (!belongsToRoot) {
+      setLoupeState(null)
+      return
+    }
+
+    const selectionRect = getSelectionRect()
+    if (!selectionRect) {
+      setLoupeState(null)
+      return
+    }
+
+    const startsInTextLayer = Boolean(startElement?.closest('.textLayer'))
+    const endsInTextLayer = Boolean(endElement?.closest('.textLayer'))
+    if (!startsInTextLayer && !endsInTextLayer) {
       setLoupeState(null)
       return
     }
 
     const rootRect = root.getBoundingClientRect()
     const loupeWidth = Math.min(260, Math.max(160, selectionRect.width + 36))
-    const preferredLeft = selectionRect.left - rootRect.left + selectionRect.width / 2 - loupeWidth / 2
-    const preferredTop = selectionRect.top - rootRect.top - 84
+    const preferredLeft =
+      selectionRect.left - rootRect.left + root.scrollLeft + selectionRect.width / 2 - loupeWidth / 2
+    const preferredTop = selectionRect.top - rootRect.top + root.scrollTop - 84
+
+    const minLeft = root.scrollLeft + 12
+    const maxLeft = root.scrollLeft + Math.max(12, root.clientWidth - loupeWidth - 12)
+    const minTop = root.scrollTop + 12
     setLoupeState({
-      left: Math.max(12, Math.min(preferredLeft, Math.max(12, root.clientWidth - loupeWidth - 12))),
-      top: Math.max(12, preferredTop),
+      left: Math.max(minLeft, Math.min(preferredLeft, maxLeft)),
+      top: Math.max(minTop, preferredTop),
       text,
       selectionColor: popupState?.selection.selectionColor ?? '#5d5df6'
     })
@@ -239,6 +311,9 @@ export function SelectionManager({
     const nextSelection = capturePdfSelection(root)
     const selectionRect = getSelectionRect()
     if (!nextSelection || !selectionRect) {
+      return
+    }
+    if (nextSelection.text.trim().length === 0) {
       return
     }
 
@@ -381,6 +456,14 @@ export function SelectionManager({
       setIsSelecting(false)
     }
 
+    const handlePointerMove = () => {
+      if (!isSelectingRef.current) {
+        return
+      }
+
+      updateLoupe()
+    }
+
     const handleSelectionChange = () => {
       if (!isSelectingRef.current) {
         return
@@ -391,7 +474,25 @@ export function SelectionManager({
 
     const handleDocumentPointerDown = (event: PointerEvent) => {
       const target = event.target as HTMLElement | null
-      if (target?.closest('.selection-action-popup') || target?.closest('.textLayer')) {
+      if (
+        target?.closest('.selection-action-popup') ||
+        target?.closest('.textLayer') ||
+        target?.closest('.page-anchor-indicator') ||
+        target?.closest('.page-bookmark-indicator') ||
+        target?.closest('.page-bookmark-margin') ||
+        target?.closest('.page-anchor-margin-right') ||
+        target?.closest('.document-tag-badges') ||
+        target?.closest('.document-highlight-button')
+      ) {
+        return
+      }
+
+      if (shouldPreserveWorkspaceFocusForPointerTarget(target)) {
+        try {
+          document.getSelection()?.removeAllRanges()
+        } catch {}
+        setLoupeState(null)
+        setPopupState(null)
         return
       }
 
@@ -400,6 +501,7 @@ export function SelectionManager({
     }
 
     root.addEventListener('pointerdown', handlePointerDown)
+    root.addEventListener('pointermove', handlePointerMove)
     document.addEventListener('selectionchange', handleSelectionChange)
     document.addEventListener('pointerup', handlePointerUp)
     document.addEventListener('pointerdown', handleDocumentPointerDown)
@@ -410,6 +512,7 @@ export function SelectionManager({
       })
       isSelectingRef.current = false
       root.removeEventListener('pointerdown', handlePointerDown)
+      root.removeEventListener('pointermove', handlePointerMove)
       document.removeEventListener('selectionchange', handleSelectionChange)
       document.removeEventListener('pointerup', handlePointerUp)
       document.removeEventListener('pointerdown', handleDocumentPointerDown)
@@ -433,24 +536,13 @@ export function SelectionManager({
     }
 
     const bookmarked = bookmarkedSet.has(popupState.anchorId)
-    const excerpted = excerptedSet.has(popupState.anchorId)
-    const undoAll = () => {
+    const linked = linkedSet.has(popupState.anchorId)
+    const clearHighlightedSelection = () => {
+      if (linked) {
+        onRemoveExcerpt?.(popupState.anchorId)
+      }
       if (onRemoveHighlight) {
         onRemoveHighlight({ anchorId: popupState.anchorId, selection: popupState.selection })
-        clearSelection()
-        return
-      }
-
-      if (popupState.tags.length > 0) {
-        const nextSelection = { ...popupState.selection, tags: [] }
-        setPopupState((current) => (current ? { ...current, selection: nextSelection, tags: [] } : current))
-        onTag(nextSelection, [])
-      }
-      if (bookmarked) {
-        onBookmark(popupState.selection)
-      }
-      if (excerpted && onRemoveExcerpt) {
-        onRemoveExcerpt(popupState.anchorId)
       }
       clearSelection()
     }
@@ -462,7 +554,6 @@ export function SelectionManager({
         selectionColor={popupState.selection.selectionColor}
         tags={popupState.tags}
         bookmarked={bookmarked}
-        excerpted={excerpted}
         interactive={!isSelecting}
         onSizeChange={setPopupSize}
         onAutoExcerpt={() => {
@@ -474,25 +565,15 @@ export function SelectionManager({
         onBookmark={() => {
           onBookmark(popupState.selection)
         }}
-        onRemoveExcerpt={
-          excerpted && onRemoveExcerpt
-            ? () => {
-                onRemoveExcerpt(popupState.anchorId)
-              }
-            : undefined
-        }
-        onRemoveHighlight={
-          onRemoveHighlight
-            ? () => {
-                onRemoveHighlight({ anchorId: popupState.anchorId, selection: popupState.selection })
-                clearSelection()
-              }
-            : undefined
-        }
         onTag={(tags) => {
           const nextSelection = { ...popupState.selection, tags }
           setPopupState((current) => (current ? { ...current, selection: nextSelection, tags } : current))
           onTag(nextSelection, tags)
+        }}
+        onClearTags={() => {
+          const nextSelection = { ...popupState.selection, tags: [] }
+          setPopupState((current) => (current ? { ...current, selection: nextSelection, tags: [] } : current))
+          onTag(nextSelection, [])
         }}
         onCopy={async () => {
           await navigator.clipboard.writeText(popupState.selection.text)
@@ -524,15 +605,14 @@ export function SelectionManager({
                 }
               : current
           )
-          if (nextSelection) {
-            onSelectionChange?.(nextSelection)
-          }
-        }}
-        onClearSelection={clearSelection}
-        onUndoAll={undoAll}
+           if (nextSelection) {
+             onSelectionChange?.(nextSelection)
+           }
+         }}
+        onClearSelection={clearHighlightedSelection}
       />
     )
-  }, [bookmarkedSet, clearSelection, excerptedSet, isSelecting, onAutoExcerpt, onBookmark, onComment, onRemoveExcerpt, onRemoveHighlight, onSelectionChange, onTag, popupState, setPopupState])
+  }, [bookmarkedSet, clearSelection, linkedSet, isSelecting, onAutoExcerpt, onBookmark, onComment, onRemoveExcerpt, onRemoveHighlight, onSelectionChange, onTag, popupState, setPopupState])
 
   const overlayRects = useMemo(() => {
     const root = rootRef.current

@@ -3,31 +3,66 @@
 import { useEffect, useRef, type PointerEvent as ReactPointerEvent } from 'react'
 import type { CanvasNode } from '@workspace/domain'
 import { getTextStyleCss } from './text-style'
+import type { NodeResizeDirection } from './ExcerptNode'
 
 interface CommentNodeProps {
   node: CanvasNode
   active: boolean
+  autoFocusEditor?: boolean
   onSelect: () => void
+  onAutoFocusApplied?: () => void
   onHandlePointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void
   onTextChange: (nextValue: string) => void
   onOpenAnchor: () => void
   onStartLink: (event: ReactPointerEvent<HTMLButtonElement>) => void
-  onStartResize: (event: ReactPointerEvent<HTMLButtonElement>) => void
+  onStartResize: (event: ReactPointerEvent<HTMLButtonElement>, direction: NodeResizeDirection) => void
 }
 
 export function CommentNode({
   node,
   active,
+  autoFocusEditor = false,
   onSelect,
+  onAutoFocusApplied,
   onHandlePointerDown,
   onTextChange,
   onOpenAnchor,
   onStartLink,
   onStartResize
 }: CommentNodeProps) {
-  const accentColor = node.selectionColor ?? '#5d5df6'
+  const accentColor = node.nodeColor ?? node.selectionColor ?? '#5d5df6'
   const textStyle = getTextStyleCss(node.textStyle)
   const editorRef = useRef<HTMLDivElement>(null)
+  const resizeDirections: NodeResizeDirection[] = [
+    'top',
+    'bottom',
+    'left',
+    'right',
+    'top-left',
+    'top-right',
+    'bottom-left',
+    'bottom-right'
+  ]
+
+  const focusEditor = () => {
+    const editor = editorRef.current
+    if (!editor) {
+      return
+    }
+
+    editor.focus()
+
+    const selection = window.getSelection()
+    if (!selection) {
+      return
+    }
+
+    const range = document.createRange()
+    range.selectNodeContents(editor)
+    range.collapse(false)
+    selection.removeAllRanges()
+    selection.addRange(range)
+  }
 
   useEffect(() => {
     const editor = editorRef.current
@@ -40,6 +75,21 @@ export function CommentNode({
     }
   }, [node.text])
 
+  useEffect(() => {
+    if (!active || !autoFocusEditor) {
+      return
+    }
+
+    const frame = requestAnimationFrame(() => {
+      focusEditor()
+      onAutoFocusApplied?.()
+    })
+
+    return () => {
+      cancelAnimationFrame(frame)
+    }
+  }, [active, autoFocusEditor, onAutoFocusApplied])
+
   return (
     <div
       className={`workspace-node workspace-comment-node${active ? ' is-active' : ''}`}
@@ -51,26 +101,35 @@ export function CommentNode({
         minHeight: node.height,
         borderColor: accentColor
       }}
-      onPointerDown={() => {
+      onPointerDown={(event) => {
+        event.stopPropagation()
         onSelect()
       }}
       onClick={() => {
         onSelect()
       }}
     >
-      {/* Clickable left arrow — jumps to source sentence in the document */}
-      <button
-        type="button"
-        className="workspace-node-anchor-arrow"
-        style={{ borderRightColor: accentColor }}
-        title="Jump to source in document"
-        onClick={(e) => {
-          e.stopPropagation()
-          onOpenAnchor()
-        }}
-      />
+      {node.sourceAnchorId ? (
+        <button
+          type="button"
+          className="workspace-node-anchor-arrow"
+          data-node-arrow-id={node.id}
+          style={{ borderRightColor: accentColor }}
+          title="Jump to source in document"
+          onClick={(e) => {
+            e.stopPropagation()
+            onOpenAnchor()
+          }}
+        />
+      ) : null}
 
-      <div className="workspace-comment-handle" onPointerDown={onHandlePointerDown}>
+      <div
+        className="workspace-comment-handle"
+        onPointerDown={(event) => {
+          event.stopPropagation()
+          onHandlePointerDown(event)
+        }}
+      >
         <span style={{ color: accentColor }}>{node.title ?? 'Comment'}</span>
         <span style={{ fontSize: 10, opacity: 0.5 }}>drag</span>
       </div>
@@ -96,6 +155,14 @@ export function CommentNode({
         onPointerDown={(event) => {
           event.stopPropagation()
           onSelect()
+          requestAnimationFrame(() => {
+            focusEditor()
+          })
+        }}
+        onClick={(event) => {
+          event.stopPropagation()
+          onSelect()
+          focusEditor()
         }}
         onFocus={onSelect}
         onInput={(event) => {
@@ -112,15 +179,18 @@ export function CommentNode({
           ))}
         </div>
       ) : null}
-      <button
-        type="button"
-        className="workspace-node-resize-handle"
-        title="Resize"
-        onPointerDown={(event) => {
-          event.stopPropagation()
-          onStartResize(event)
-        }}
-      />
+      {resizeDirections.map((direction) => (
+        <button
+          key={direction}
+          type="button"
+          className={`workspace-node-resize-handle workspace-node-resize-${direction}`}
+          title={`Resize ${direction}`}
+          onPointerDown={(event) => {
+            event.stopPropagation()
+            onStartResize(event, direction)
+          }}
+        />
+      ))}
     </div>
   )
 }

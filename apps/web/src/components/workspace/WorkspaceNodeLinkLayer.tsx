@@ -11,6 +11,7 @@ interface WorkspaceNodeLinkLayerProps {
   links: WorkspaceNodeLink[]
   linkingState: WorkspaceLinkingState | null
   activeNodeId: string | null
+  disabled?: boolean
   onOpenLink: (link: WorkspaceNodeLink) => void
 }
 
@@ -35,6 +36,7 @@ export function WorkspaceNodeLinkLayer({
   links,
   linkingState,
   activeNodeId,
+  disabled = false,
   onOpenLink
 }: WorkspaceNodeLinkLayerProps) {
   const nodeIndex = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes])
@@ -89,19 +91,23 @@ export function WorkspaceNodeLinkLayer({
             stroke="#4f8cff"
             strokeWidth={active ? 3 : 2}
             strokeOpacity={active ? 0.9 : 0.6}
+            vectorEffect="non-scaling-stroke"
             className="workspace-node-link-visible"
           />
-          <path
-            d={path}
-            fill="none"
-            stroke="transparent"
-            strokeWidth={14}
-            className="workspace-node-link-hit"
-            onPointerDown={(event) => {
-              event.stopPropagation()
-              onOpenLink(link)
-            }}
-          />
+          {!disabled ? (
+            <path
+              d={path}
+              fill="none"
+              stroke="transparent"
+              strokeWidth={14}
+              vectorEffect="non-scaling-stroke"
+              className="workspace-node-link-hit"
+              onPointerDown={(event) => {
+                event.stopPropagation()
+                onOpenLink(link)
+              }}
+            />
+          ) : null}
         </g>
       ))}
       {previewPath ? (
@@ -112,6 +118,7 @@ export function WorkspaceNodeLinkLayer({
           strokeWidth={2}
           strokeOpacity={0.5}
           strokeDasharray="6 6"
+          vectorEffect="non-scaling-stroke"
         />
       ) : null}
     </svg>

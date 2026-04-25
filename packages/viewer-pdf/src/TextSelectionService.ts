@@ -20,6 +20,13 @@ export class TextSelectionService {
     }
 
     const range = selection.getRangeAt(0);
+    
+    // Ensure the selection is actually inside this PDF page container
+    // This prevents capturing selections from Workspace Textboxes or other UI elements
+    if (!pageContainer.contains(range.commonAncestorContainer)) {
+      return null;
+    }
+
     const selectedText = selection.toString().trim();
     if (!selectedText) return null;
 

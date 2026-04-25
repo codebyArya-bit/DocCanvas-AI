@@ -1,0 +1,156 @@
+- generic [ref=e1]:
+  - main [ref=e2]:
+    - generic [ref=e3]:
+      - generic [ref=e4]:
+        - generic [ref=e5]: Document Intelligence Workspace
+        - strong [ref=e6]: Selection → action popup → workspace node → linked navigation
+      - generic [ref=e7]:
+        - generic "Workspace zoom controls" [ref=e8]:
+          - button "-" [ref=e9] [cursor=pointer]
+          - button "100%" [ref=e10] [cursor=pointer]
+          - button "+" [ref=e11] [cursor=pointer]
+        - button "Notes" [ref=e12] [cursor=pointer]
+        - generic [ref=e13]: PDF.js • draggable workspace • SVG link layer
+    - generic [ref=e15]:
+      - generic [ref=e16]:
+        - generic [ref=e17]: Source Document
+        - button "Import PDF" [ref=e19] [cursor=pointer]
+      - generic [ref=e21]:
+        - generic [ref=e22]: Drop a PDF here
+        - paragraph [ref=e23]: Import a local PDF to enable real selection, action popup, workspace nodes, and bidirectional links.
+        - button "Choose PDF" [ref=e24] [cursor=pointer]
+    - generic [ref=e26]:
+      - generic [ref=e27]: Workspace
+      - generic [ref=e37]:
+        - generic [ref=e38]:
+          - generic [ref=e39]: Text
+          - generic [ref=e40]:
+            - generic [ref=e41]: drag
+            - button "Delete" [ref=e42] [cursor=pointer]
+        - generic [active] [ref=e45]:
+          - paragraph [ref=e46]: First line for textbox testing
+          - paragraph [ref=e47]
+          - paragraph [ref=e48]: gcujvjvolb
+      - generic [ref=e67]:
+        - generic "Formatting" [ref=e68]:
+          - button "B" [ref=e69] [cursor=pointer]:
+            - strong [ref=e70]: B
+          - button "I" [ref=e71] [cursor=pointer]:
+            - emphasis [ref=e72]: I
+          - button "U" [ref=e73] [cursor=pointer]:
+            - generic [ref=e74]: U
+          - button "S" [ref=e75] [cursor=pointer]:
+            - generic [ref=e76]: S
+        - generic "Structure" [ref=e78]:
+          - button "•" [ref=e79] [cursor=pointer]
+          - button "1." [ref=e80] [cursor=pointer]
+          - button "P" [ref=e81] [cursor=pointer]
+          - button "H1" [ref=e82] [cursor=pointer]
+          - button "H2" [ref=e83] [cursor=pointer]
+        - generic "Typography" [ref=e85]:
+          - combobox [ref=e86]:
+            - option "System Sans" [selected]
+            - option "Cairo"
+            - option "Georgia"
+            - option "Courier"
+            - option "Trebuchet"
+          - combobox [ref=e87]:
+            - option "4"
+            - option "5"
+            - option "6"
+            - option "7"
+            - option "8"
+            - option "9"
+            - option "10"
+            - option "11"
+            - option "12"
+            - option "13"
+            - option "14"
+            - option "15"
+            - option "16" [selected]
+            - option "17"
+            - option "18"
+            - option "19"
+            - option "20"
+            - option "21"
+            - option "22"
+            - option "23"
+            - option "24"
+            - option "25"
+            - option "26"
+            - option "27"
+            - option "28"
+            - option "29"
+            - option "30"
+            - option "31"
+            - option "32"
+            - option "33"
+            - option "34"
+            - option "35"
+            - option "36"
+            - option "37"
+            - option "38"
+            - option "39"
+            - option "40"
+            - option "41"
+            - option "42"
+            - option "43"
+            - option "44"
+            - option "45"
+            - option "46"
+            - option "47"
+            - option "48"
+            - option "49"
+            - option "50"
+            - option "51"
+            - option "52"
+            - option "53"
+            - option "54"
+            - option "55"
+            - option "56"
+            - option "57"
+            - option "58"
+            - option "59"
+            - option "60"
+            - option "61"
+            - option "62"
+            - option "63"
+            - option "64"
+            - option "65"
+            - option "66"
+            - option "67"
+            - option "68"
+            - option "69"
+            - option "70"
+            - option "71"
+            - option "72"
+            - option "73"
+            - option "74"
+            - option "75"
+            - option "76"
+            - option "77"
+            - option "78"
+            - option "79"
+            - option "80"
+            - option "81"
+            - option "82"
+            - option "83"
+            - option "84"
+          - spinbutton [ref=e88]: "16"
+        - generic "Styling" [ref=e90]:
+          - generic "Text color" [ref=e91] [cursor=pointer]:
+            - generic [ref=e92]: A
+            - textbox "A" [ref=e93]: "#1f1b16"
+          - generic "Highlight color" [ref=e94] [cursor=pointer]:
+            - generic [ref=e95]: Hl
+            - textbox "Hl" [ref=e96]: "#fff08a"
+      - generic "Workspace tools" [ref=e30]:
+        - button "Draw Textbox in Workspace" [ref=e31] [cursor=pointer]:
+          - generic [ref=e32]: AB+
+        - button "Zoom Out" [ref=e33] [cursor=pointer]:
+          - generic [ref=e34]: −
+        - button "Add Card" [ref=e35] [cursor=pointer]:
+          - generic [ref=e36]: +□
+  - button "Open Next.js Dev Tools" [ref=e62] [cursor=pointer]:
+    - img [ref=e63]
+  - alert [ref=e66]

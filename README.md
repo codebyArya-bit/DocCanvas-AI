@@ -84,6 +84,7 @@ document-intelligence-workspace/
 
 - Excerpt cards
 - Comment cards
+- Rich text boxes with in-place ProseMirror editing
 - Node dragging
 - Node resizing
 - Text formatting toolbar for selected nodes
@@ -135,6 +136,22 @@ npm run dev --workspace @workspace/server
 npm run typecheck
 ```
 
+### Unit Tests
+
+```bash
+npm test
+```
+
+This runs the focused assertion-based unit coverage for the note editor, workspace CRUD helpers, and textbox toolbar behavior.
+
+### Production Verification
+
+```bash
+npm run build
+```
+
+Use `npm run dev` for local interaction checks and `npm run build` to verify the production bundle compiles cleanly.
+
 ## Monorepo Scripts
 
 From the repository root:
@@ -142,8 +159,16 @@ From the repository root:
 - `npm run dev`
 - `npm run dev:web`
 - `npm run dev:server`
+- `npm test`
+- `npm run test:unit`
 - `npm run build`
 - `npm run typecheck`
+
+## Textbox Toolbar Behavior
+
+- The floating textbox toolbar stays open while interacting with native controls such as font selects, size inputs, and color pickers.
+- Native control changes restore editor focus after the selection is applied so formatting can continue without collapsing the editing session.
+- Toolbar formatting state normalizes font-size and color values to avoid invalid UI state during rapid edits or browser-specific color input behavior.
 
 ## Domain Model
 

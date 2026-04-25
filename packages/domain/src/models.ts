@@ -75,14 +75,17 @@ export interface CanvasNode {
   documentId?: string
   sourceAnchorId?: string
   selectionColor?: string
+  nodeColor?: string
   title?: string
   text?: string
+  prosemirrorJson?: Record<string, unknown>
   tags?: string[]
   textStyle?: TextStyle
   x: number
   y: number
   width: number
   height: number
+  visible?: boolean
   createdAt: string
   updatedAt: string
 }
@@ -108,6 +111,10 @@ export interface Note {
   excerptIds: string[]
   documentIds: string[]
   prosemirrorJson: Record<string, unknown>
+  x: number
+  y: number
+  width: number
+  height: number
   createdAt: string
   updatedAt: string
 }

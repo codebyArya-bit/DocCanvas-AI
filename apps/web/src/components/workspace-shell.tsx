@@ -1,19 +1,21 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import type { Bookmark, CanvasEdge, CanvasNode, Excerpt, Note, PageAnchor, TextStyle } from '@workspace/domain'
-import { buildAnchorLink, buildBookmark, buildExcerpt, buildPageAnchor, type SelectionArtifactInput } from '../lib/excerpts/pdf-selection'
+import { buildBookmark, buildExcerpt, buildPageAnchor, type SelectionArtifactInput } from '../lib/excerpts/pdf-selection'
 import { loadWorkspaceState, persistWorkspaceState } from '../lib/indexeddb/local-cache'
 import type { PersistedPdfDocument, WorkspacePersistenceState } from '../lib/workspace/workspace-state'
+import { createCanvasNode } from '../lib/workspace/canvas-node-crud'
+import { buildSourceHighlightDescriptors } from '../lib/workspace/source-highlight-descriptors'
 import { buildWorkspaceNodeLink, type WorkspaceNodeLink } from '../lib/workspace/node-links'
 import { WorkspaceCanvas } from './workspace/WorkspaceCanvas'
-import { NoteEditor } from './notes/note-editor'
+import { WorkspaceTextToolbar } from './workspace/WorkspaceTextToolbar'
 import { PdfViewer } from './pdf/pdf-viewer'
 import { LinkLayer } from './workspace/LinkLayer'
 import type { AnchorViewportMetric } from './pdf/AnchorService'
-import { WorkspaceTextToolbar } from './workspace/WorkspaceTextToolbar'
 
 const WORKSPACE_ID = 'workspace-1'
+const STANDARD_TAGS = ['important', 'question', 'evidence', 'counterpoint', 'defined-term', 'follow-up']
 
 const seedNote: Note = {
   id: 'note-1',
@@ -22,6 +24,10 @@ const seedNote: Note = {
   excerptIds: [],
   documentIds: [],
   prosemirrorJson: { type: 'doc', content: [{ type: 'paragraph' }] },
+  x: 148,
+  y: 124,
+  width: 420,
+  height: 280,
   createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString()
 }
@@ -35,6 +41,13 @@ const defaultTextStyle: TextStyle = {
   underline: false,
   strikethrough: false
 }
+
+const DEFAULT_WORKSPACE_VIEWPORT: { panX: number; panY: number; zoom: number } = {
+  panX: 92,
+  panY: 72,
+  zoom: 1
+}
+type ZoomPane = 'document' | 'workspace'
 
 function upsertById<T extends { id: string }>(items: T[], nextItem: T) {
   const existing = items.find((item) => item.id === nextItem.id)
@@ -57,10 +70,19 @@ function rectanglesOverlap(
   )
 }
 
+interface TagIndexEntry {
+  highlights: string[]
+  excerpts: string[]
+  comments: string[]
+  bookmarks: string[]
+}
+
 export function WorkspaceShell() {
   const shellRef = useRef<HTMLElement | null>(null)
   const workspacePaneRef = useRef<HTMLElement | null>(null)
   const documentPaneRef = useRef<HTMLElement | null>(null)
+  const splitResizeRef = useRef<{ startX: number; startWidth: number } | null>(null)
+  const activeZoomPaneRef = useRef<ZoomPane>('workspace')
   const [documentState, setDocumentState] = useState<PersistedPdfDocument | null>(null)
   const [anchors, setAnchors] = useState<PageAnchor[]>([])
   const [excerpts, setExcerpts] = useState<Excerpt[]>([])
@@ -71,6 +93,8 @@ export function WorkspaceShell() {
   const [anchorMetrics, setAnchorMetrics] = useState<Record<string, AnchorViewportMetric>>({})
   const [activeAnchorId, setActiveAnchorId] = useState<string | null>(null)
   const [activeNodeId, setActiveNodeId] = useState<string | null>(null)
+  const [activeTextEditingNodeId, setActiveTextEditingNodeId] = useState<string | null>(null)
+  const [pendingTextAutofocusNodeId, setPendingTextAutofocusNodeId] = useState<string | null>(null)
   const [activeNote, setActiveNote] = useState<Note>(seedNote)
   const [hydrated, setHydrated] = useState(false)
   const [shellRect, setShellRect] = useState<DOMRect | null>(null)
@@ -79,11 +103,26 @@ export function WorkspaceShell() {
   const [activeEdgeId, setActiveEdgeId] = useState<string | null>(null)
   const [notesOpen, setNotesOpen] = useState(false)
   const [activeAnchorJumpKey, setActiveAnchorJumpKey] = useState(0)
+  const [activeTag, setActiveTag] = useState<string | null>(null)
+  const [documentPaneWidth, setDocumentPaneWidth] = useState(540)
+  const [workspaceViewport, setWorkspaceViewport] = useState(DEFAULT_WORKSPACE_VIEWPORT)
+  const [pageZoom, setPageZoom] = useState(1)
+  const [appZoom, setAppZoom] = useState(1)
 
   const excerptIndex = useMemo(() => new Map(excerpts.map((excerpt) => [excerpt.id, excerpt])), [excerpts])
-  const anchorIndex = useMemo(() => new Map(anchors.map((anchor) => [anchor.id, anchor])), [anchors])
 
   useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem('workspace:workspaceZoom')
+      const parsed = stored ? Number(stored) : 1
+      if (Number.isFinite(parsed) && parsed > 0) {
+        setWorkspaceViewport((current) => ({
+          ...current,
+          zoom: Math.max(0.3, Math.min(3, parsed))
+        }))
+      }
+    } catch {}
+
     let isMounted = true
     void loadWorkspaceState<WorkspacePersistenceState>(WORKSPACE_ID).then((state) => {
       if (!isMounted) {
@@ -95,10 +134,18 @@ export function WorkspaceShell() {
         setAnchors(state.anchors)
         setExcerpts(state.excerpts)
         setBookmarks(state.bookmarks)
-        setCanvasNodes(state.canvasNodes)
+        setCanvasNodes(state.canvasNodes.map((node) => ({ ...node, visible: node.visible ?? true })))
         setCanvasEdges(state.canvasEdges ?? [])
         setWorkspaceLinks(state.workspaceLinks ?? [])
         setActiveAnchorId(state.activeAnchorId)
+        setActiveNote(
+          state.activeNote
+            ? {
+                ...seedNote,
+                ...state.activeNote
+              }
+            : seedNote
+        )
       }
 
       setHydrated(true)
@@ -108,6 +155,91 @@ export function WorkspaceShell() {
       isMounted = false
     }
   }, [])
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('workspace:workspaceZoom', String(workspaceViewport.zoom))
+    } catch {}
+  }, [workspaceViewport.zoom])
+
+  const clampWorkspaceZoom = useCallback((nextZoom: number) => Math.max(0.3, Math.min(3, Number(nextZoom.toFixed(2)))), [])
+  const updateWorkspaceZoom = useCallback(
+    (targetZoom: number) => {
+      const zoomFocusCandidates = canvasNodes.filter(
+        (node) => node.visible !== false && (node.kind === 'excerpt' || node.kind === 'comment')
+      )
+      const zoomFocusNode =
+        zoomFocusCandidates.find((node) => node.id === activeNodeId) ??
+        [...zoomFocusCandidates].sort((left, right) => left.y - right.y || left.x - right.x || left.createdAt.localeCompare(right.createdAt))[0] ??
+        null
+
+      setWorkspaceViewport((current) => {
+        const nextZoom = clampWorkspaceZoom(targetZoom)
+        if (!workspaceRect) {
+          return { ...current, zoom: nextZoom }
+        }
+
+        const centerX = workspaceRect.width / 2
+        const targetScreenY = Math.min(workspaceRect.height / 2, Math.max(140, workspaceRect.height * 0.32))
+        const worldCenterX = zoomFocusNode ? zoomFocusNode.x + zoomFocusNode.width / 2 : (centerX - current.panX) / current.zoom
+        const worldCenterY = zoomFocusNode ? zoomFocusNode.y + Math.min(zoomFocusNode.height / 2, 72) : (targetScreenY - current.panY) / current.zoom
+
+        return {
+          zoom: nextZoom,
+          panX: centerX - worldCenterX * nextZoom,
+          panY: targetScreenY - worldCenterY * nextZoom
+        }
+      })
+    },
+    [activeNodeId, canvasNodes, clampWorkspaceZoom, workspaceRect]
+  )
+  const workspaceZoomOut = useCallback(() => updateWorkspaceZoom(workspaceViewport.zoom - 0.1), [updateWorkspaceZoom, workspaceViewport.zoom])
+  const workspaceZoomIn = useCallback(() => updateWorkspaceZoom(workspaceViewport.zoom + 0.1), [updateWorkspaceZoom, workspaceViewport.zoom])
+  const workspaceZoomReset = useCallback(() => setWorkspaceViewport(DEFAULT_WORKSPACE_VIEWPORT), [])
+  const clampAppZoom = useCallback((nextZoom: number) => Math.max(0.75, Math.min(1.5, Number(nextZoom.toFixed(2)))), [])
+  const appZoomOut = useCallback(() => setAppZoom((current) => clampAppZoom(current - 0.1)), [clampAppZoom])
+  const appZoomIn = useCallback(() => setAppZoom((current) => clampAppZoom(current + 0.1)), [clampAppZoom])
+  const appZoomReset = useCallback(() => setAppZoom(1), [])
+  const clampPageZoom = useCallback((nextZoom: number) => Math.max(0.6, Math.min(3, Number(nextZoom.toFixed(2)))), [])
+  const pageZoomOut = useCallback(() => setPageZoom((current) => clampPageZoom(current - 0.1)), [clampPageZoom])
+  const pageZoomIn = useCallback(() => setPageZoom((current) => clampPageZoom(current + 0.1)), [clampPageZoom])
+  const pageZoomReset = useCallback(() => setPageZoom(1), [])
+  const markZoomPane = useCallback((pane: ZoomPane) => {
+    activeZoomPaneRef.current = pane
+  }, [])
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!event.ctrlKey && !event.metaKey) {
+        return
+      }
+
+      const target = event.target as HTMLElement | null
+      if (target?.closest('input, textarea, select, [contenteditable="true"], .ProseMirror')) {
+        return
+      }
+
+      const key = event.key
+      if (key !== '+' && key !== '=' && key !== '-' && key !== '0') {
+        return
+      }
+
+      event.preventDefault()
+      if (activeZoomPaneRef.current === 'document') {
+        if (key === '+' || key === '=') pageZoomIn()
+        if (key === '-') pageZoomOut()
+        if (key === '0') pageZoomReset()
+        return
+      }
+
+      if (key === '+' || key === '=') workspaceZoomIn()
+      if (key === '-') workspaceZoomOut()
+      if (key === '0') workspaceZoomReset()
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [pageZoomIn, pageZoomOut, pageZoomReset, workspaceZoomIn, workspaceZoomOut, workspaceZoomReset])
 
   useEffect(() => {
     if (!hydrated) {
@@ -122,11 +254,12 @@ export function WorkspaceShell() {
       canvasNodes,
       canvasEdges,
       workspaceLinks,
-      activeAnchorId
+      activeAnchorId,
+      activeNote
     }).catch((error) => {
       console.error('Failed to persist workspace state', error)
     })
-  }, [activeAnchorId, anchors, bookmarks, canvasEdges, canvasNodes, documentState, excerpts, hydrated, workspaceLinks])
+  }, [activeAnchorId, activeNote, anchors, bookmarks, canvasEdges, canvasNodes, documentState, excerpts, hydrated, workspaceLinks])
 
   useEffect(() => {
     const measure = () => {
@@ -135,9 +268,59 @@ export function WorkspaceShell() {
       setDocumentPaneRect(documentPaneRef.current?.getBoundingClientRect() ?? null)
     }
 
+    const resizeObserver =
+      typeof ResizeObserver !== 'undefined'
+        ? new ResizeObserver(() => {
+            measure()
+          })
+        : null
+
     measure()
     window.addEventListener('resize', measure)
-    return () => window.removeEventListener('resize', measure)
+    if (resizeObserver) {
+      if (shellRef.current) {
+        resizeObserver.observe(shellRef.current)
+      }
+      if (workspacePaneRef.current) {
+        resizeObserver.observe(workspacePaneRef.current)
+      }
+      if (documentPaneRef.current) {
+        resizeObserver.observe(documentPaneRef.current)
+      }
+    }
+
+    return () => {
+      window.removeEventListener('resize', measure)
+      resizeObserver?.disconnect()
+    }
+  }, [])
+
+  useEffect(() => {
+    function handlePointerMove(event: PointerEvent) {
+      const resize = splitResizeRef.current
+      const shell = shellRef.current
+      if (!resize || !shell) {
+        return
+      }
+
+      const shellRect = shell.getBoundingClientRect()
+      const availableWidth = Math.max(880, shellRect.width - 48)
+      const nextWidth = resize.startWidth + (event.clientX - resize.startX)
+      setDocumentPaneWidth(Math.min(availableWidth - 320, Math.max(360, nextWidth)))
+    }
+
+    function stopResize() {
+      splitResizeRef.current = null
+    }
+
+    window.addEventListener('pointermove', handlePointerMove)
+    window.addEventListener('pointerup', stopResize)
+    window.addEventListener('pointercancel', stopResize)
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', stopResize)
+      window.removeEventListener('pointercancel', stopResize)
+    }
   }, [])
 
   function resolveWorkspaceRow(viewportRatio: number, nodeHeight: number) {
@@ -151,12 +334,9 @@ export function WorkspaceShell() {
     existingNodes: CanvasNode[],
     ignoreNodeId?: string
   ) {
-    const paneRect = workspacePaneRef.current?.getBoundingClientRect()
-    const paneWidth = paneRect?.width ?? 960
-    const paneHeight = paneRect?.height ?? 720
     const verticalStep = preferred.height + 18
-    const clampedX = Math.max(24, Math.min(preferred.x, Math.max(24, paneWidth - preferred.width - 24)))
-    let candidateY = Math.max(24, Math.min(preferred.y, Math.max(24, paneHeight - preferred.height - 24)))
+    const clampedX = Math.max(24, preferred.x)
+    let candidateY = Math.max(24, preferred.y)
     let attempts = 0
 
     while (attempts < 64) {
@@ -181,9 +361,6 @@ export function WorkspaceShell() {
       }
 
       candidateY += verticalStep
-      if (candidateY + preferred.height > paneHeight - 24) {
-        candidateY = 24
-      }
       attempts += 1
     }
 
@@ -231,6 +408,28 @@ export function WorkspaceShell() {
     return { anchor, excerpt }
   }
 
+  function upsertAnchorForBookmark(input: SelectionArtifactInput) {
+    const nextAnchor = {
+      ...buildPageAnchor(input),
+      selectionColor: undefined
+    }
+
+    setAnchors((current) => {
+      const existingAnchor = current.find((anchor) => anchor.id === nextAnchor.id)
+      const bookmarkAnchor = existingAnchor
+        ? {
+            ...nextAnchor,
+            selectionColor: existingAnchor.selectionColor,
+            tags: nextAnchor.tags?.length ? nextAnchor.tags : existingAnchor.tags
+          }
+        : nextAnchor
+
+      return upsertById(current, bookmarkAnchor)
+    })
+
+    return nextAnchor
+  }
+
   function ensureEdge(
     anchorId: string,
     nodeId: string,
@@ -275,6 +474,7 @@ export function WorkspaceShell() {
       y: y ?? resolveWorkspaceRow(viewportRatio, 140),
       width: 280,
       height: 140,
+      visible: true,
       createdAt: now,
       updatedAt: now
     }
@@ -321,6 +521,7 @@ export function WorkspaceShell() {
       y: relatedExcerptNode ? relatedExcerptNode.y : resolveWorkspaceRow(viewportRatio, 184),
       width: 300,
       height: 156,
+      visible: true,
       createdAt: now,
       updatedAt: now
     }
@@ -381,9 +582,50 @@ export function WorkspaceShell() {
     focusBoth(anchor.id, nodeId)
   }
 
+  const createTextBoxNode = useCallback(() => {
+    const paneRect = workspacePaneRef.current?.getBoundingClientRect() ?? null
+    const zoom = Math.max(0.3, workspaceViewport.zoom)
+    const worldCenterX = paneRect ? (paneRect.width / 2 - workspaceViewport.panX) / zoom : 280
+    const worldCenterY = paneRect ? (paneRect.height / 2 - workspaceViewport.panY) / zoom : 220
+    const now = new Date().toISOString()
+    const nodeId = `canvas-text-${Date.now()}`
+    const node: CanvasNode = {
+      id: nodeId,
+      workspaceId: WORKSPACE_ID,
+      kind: 'text',
+      title: 'Text',
+      text: '',
+      x: Math.max(8, Math.round(worldCenterX - 140)),
+      y: Math.max(8, Math.round(worldCenterY - 90)),
+      width: 280,
+      height: 140,
+      visible: true,
+      createdAt: now,
+      updatedAt: now
+    }
+
+    setCanvasNodes((current) => {
+      const result = createCanvasNode(current, node)
+      if (!result.ok) {
+        console.error('[WorkspaceShell] failed to create text canvas node', { nodeId }, result.error)
+        return current
+      }
+      return result.value
+    })
+    setActiveAnchorId(null)
+    setActiveEdgeId(null)
+    setActiveNodeId(nodeId)
+    setActiveTextEditingNodeId(nodeId)
+    setPendingTextAutofocusNodeId(nodeId)
+  }, [workspaceViewport.panX, workspaceViewport.panY, workspaceViewport.zoom])
+
   function focusBoth(anchorId: string | null, nodeId: string | null, edgeId?: string | null) {
     setActiveAnchorId(anchorId)
     setActiveNodeId(nodeId)
+    if (!nodeId) {
+      setActiveTextEditingNodeId(null)
+      setPendingTextAutofocusNodeId(null)
+    }
     setActiveEdgeId(edgeId ?? (anchorId && nodeId ? `edge-${anchorId}-${nodeId}` : null))
     if (anchorId) {
       setActiveAnchorJumpKey((current) => current + 1)
@@ -392,17 +634,41 @@ export function WorkspaceShell() {
 
   function tagSelection(selection: SelectionArtifactInput, tags: string[]) {
     const anchor = buildPageAnchor({ ...selection, tags })
+    const normalizedTags = tags.map((tag) => tag.trim()).filter(Boolean)
+    const hasRelatedArtifacts =
+      excerpts.some((excerpt) => excerpt.anchorId === anchor.id) ||
+      bookmarks.some((bookmark) => bookmark.sourceAnchorId === anchor.id) ||
+      canvasNodes.some((node) => node.sourceAnchorId === anchor.id)
     setAnchors((current) => {
       const existing = current.find((item) => item.id === anchor.id)
+      // If the user cleared tags on a tag-only highlight (no excerpt/bookmark/node), remove the anchor entirely
+      // so the PDF highlight disappears.
+      if (existing && normalizedTags.length === 0 && !hasRelatedArtifacts && !existing.selectionColor) {
+        return current.filter((item) => item.id !== anchor.id)
+      }
       if (!existing) {
-        return [...current, anchor]
+        if (normalizedTags.length === 0) {
+          return current
+        }
+
+        // Tag-only highlights should not create a persistent "color highlight".
+        // We still render while tags exist (via anchor.tags), but when tags are removed,
+        // the highlight disappears because selectionColor is unset.
+        return [
+          ...current,
+          {
+            ...anchor,
+            selectionColor: undefined,
+            tags: normalizedTags
+          }
+        ]
       }
 
       return current.map((item) =>
         item.id === anchor.id
           ? {
               ...item,
-              tags,
+              tags: normalizedTags,
               updatedAt: new Date().toISOString()
             }
           : item
@@ -414,7 +680,7 @@ export function WorkspaceShell() {
         excerpt.anchorId === anchor.id
           ? {
               ...excerpt,
-              tags,
+              tags: normalizedTags,
               updatedAt: new Date().toISOString()
             }
           : excerpt
@@ -425,7 +691,7 @@ export function WorkspaceShell() {
         bookmark.sourceAnchorId === anchor.id
           ? {
               ...bookmark,
-              tags,
+              tags: normalizedTags,
               updatedAt: new Date().toISOString()
             }
           : bookmark
@@ -436,7 +702,7 @@ export function WorkspaceShell() {
         node.sourceAnchorId === anchor.id
           ? {
               ...node,
-              tags,
+              tags: normalizedTags,
               updatedAt: new Date().toISOString()
             }
           : node
@@ -512,190 +778,21 @@ export function WorkspaceShell() {
     )
   }
 
-  function applyNodeLinkedUpdates(
-    nodeId: string,
-    updates: {
-      selectionColor?: string
-      tags?: string[]
-    }
-  ) {
-    const node = canvasNodes.find((entry) => entry.id === nodeId)
-    if (!node) {
+
+  function removeCanvasNodesById(nodeIds: string[]) {
+    const nodeIdsToRemove = new Set(nodeIds)
+    if (nodeIdsToRemove.size === 0) {
       return
     }
 
-    const now = new Date().toISOString()
-    if (updates.selectionColor) {
-      if (node.sourceAnchorId) {
-        setAnchors((current) =>
-          current.map((anchor) =>
-            anchor.id === node.sourceAnchorId
-              ? {
-                  ...anchor,
-                  selectionColor: updates.selectionColor!,
-                  updatedAt: now
-                }
-              : anchor
-          )
-        )
-      }
-
-      setCanvasNodes((current) =>
-        current.map((entry) =>
-          entry.id === nodeId
-            ? {
-                ...entry,
-                selectionColor: updates.selectionColor,
-                updatedAt: now
-              }
-            : entry
-        )
-      )
-
-      if (node.sourceAnchorId) {
-        setExcerpts((current) =>
-          current.map((excerpt) =>
-            excerpt.anchorId === node.sourceAnchorId
-              ? {
-                  ...excerpt,
-                  selectionColor: updates.selectionColor!,
-                  updatedAt: now
-                }
-              : excerpt
-          )
-        )
-        setBookmarks((current) =>
-          current.map((bookmark) =>
-            bookmark.sourceAnchorId === node.sourceAnchorId
-              ? {
-                  ...bookmark,
-                  selectionColor: updates.selectionColor!,
-                  updatedAt: now
-                }
-              : bookmark
-          )
-        )
-        setCanvasEdges((current) =>
-          current.map((edge) =>
-            edge.sourceAnchorId === node.sourceAnchorId
-              ? {
-                  ...edge,
-                  color: updates.selectionColor!,
-                  updatedAt: now
-                }
-              : edge
-          )
-        )
-      }
-    }
-
-    if (updates.tags) {
-      setCanvasNodes((current) =>
-        current.map((entry) =>
-          entry.id === nodeId
-            ? {
-                ...entry,
-                tags: updates.tags,
-                updatedAt: now
-              }
-            : entry
-        )
-      )
-
-      if (node.sourceAnchorId) {
-        setAnchors((current) =>
-          current.map((anchor) =>
-            anchor.id === node.sourceAnchorId
-              ? {
-                  ...anchor,
-                  tags: updates.tags,
-                  updatedAt: now
-                }
-              : anchor
-          )
-        )
-        setExcerpts((current) =>
-          current.map((excerpt) =>
-            excerpt.anchorId === node.sourceAnchorId
-              ? {
-                  ...excerpt,
-                  tags: updates.tags,
-                  updatedAt: now
-                }
-              : excerpt
-          )
-        )
-        setBookmarks((current) =>
-          current.map((bookmark) =>
-            bookmark.sourceAnchorId === node.sourceAnchorId
-              ? {
-                  ...bookmark,
-                  tags: updates.tags,
-                  updatedAt: now
-                }
-              : bookmark
-          )
-        )
-      }
-    }
-  }
-
-  function removeNodeAndCleanup(nodeId: string) {
-    const node = canvasNodes.find((entry) => entry.id === nodeId)
-    if (!node) {
-      return
-    }
-
-    const remainingNodes = canvasNodes.filter((entry) => entry.id !== nodeId)
-    const remainingEdges = canvasEdges.filter((edge) => edge.targetNodeId !== nodeId)
-    const remainingWorkspaceLinks = workspaceLinks.filter((link) => link.fromNodeId !== nodeId && link.toNodeId !== nodeId)
-    const remainingBookmarks = bookmarks
-    const shouldRemoveExcerpt = node.kind === 'excerpt' && node.excerptId
-      ? !remainingNodes.some((entry) => entry.excerptId === node.excerptId)
-      : false
-    const remainingExcerpts = shouldRemoveExcerpt
-      ? excerpts.filter((excerpt) => excerpt.id !== node.excerptId)
-      : excerpts
-    const shouldRemoveAnchor = node.sourceAnchorId
-      ? !remainingNodes.some((entry) => entry.sourceAnchorId === node.sourceAnchorId) &&
-        !remainingBookmarks.some((bookmark) => bookmark.sourceAnchorId === node.sourceAnchorId) &&
-        !remainingExcerpts.some((excerpt) => excerpt.anchorId === node.sourceAnchorId)
-      : false
-    const remainingAnchors = shouldRemoveAnchor
-      ? anchors.filter((anchor) => anchor.id !== node.sourceAnchorId)
-      : anchors
-
-    setCanvasNodes(remainingNodes)
-    setCanvasEdges(remainingEdges)
-    setWorkspaceLinks(remainingWorkspaceLinks)
-    if (shouldRemoveExcerpt) {
-      setExcerpts(remainingExcerpts)
-    }
-    if (shouldRemoveAnchor) {
-      setAnchors(remainingAnchors)
-    }
-
-    if (activeNodeId === nodeId) {
-      setActiveNodeId(null)
-    }
-    if (node.sourceAnchorId && (shouldRemoveAnchor || activeAnchorId === node.sourceAnchorId)) {
-      setActiveAnchorId(null)
-    }
-    setActiveEdgeId((current) => {
-      if (!current) {
-        return current
-      }
-      return remainingEdges.some((edge) => edge.id === current) ? current : null
-    })
-  }
-
-  function removeExcerptByAnchorId(anchorId: string) {
-    const nodesToRemove = canvasNodes.filter((entry) => entry.kind === 'excerpt' && entry.sourceAnchorId === anchorId)
+    const nodesToRemove = canvasNodes.filter((entry) => nodeIdsToRemove.has(entry.id))
     if (nodesToRemove.length === 0) {
       return
     }
 
-    const nodeIdsToRemove = new Set(nodesToRemove.map((node) => node.id))
+    const anchorIdsToConsider = new Set(
+      nodesToRemove.map((node) => node.sourceAnchorId).filter((anchorId): anchorId is string => Boolean(anchorId))
+    )
     const excerptIdsToConsider = new Set(nodesToRemove.map((node) => node.excerptId).filter(Boolean) as string[])
     const remainingNodes = canvasNodes.filter((entry) => !nodeIdsToRemove.has(entry.id))
     const remainingEdges = canvasEdges.filter((edge) => !nodeIdsToRemove.has(edge.targetNodeId))
@@ -714,12 +811,43 @@ export function WorkspaceShell() {
       ? excerpts.filter((excerpt) => !excerptIdsToRemove.has(excerpt.id))
       : excerpts
 
-    const shouldRemoveAnchor =
-      !remainingNodes.some((entry) => entry.sourceAnchorId === anchorId) &&
-      !bookmarks.some((bookmark) => bookmark.sourceAnchorId === anchorId) &&
-      !remainingExcerpts.some((excerpt) => excerpt.anchorId === anchorId)
+    const anchorIdsToRemove = new Set<string>()
+    const anchorIdsToFade = new Set<string>()
+    anchorIdsToConsider.forEach((anchorId) => {
+      const anchor = anchors.find((entry) => entry.id === anchorId)
+      if (!anchor) {
+        return
+      }
 
-    const remainingAnchors = shouldRemoveAnchor ? anchors.filter((anchor) => anchor.id !== anchorId) : anchors
+      const hasRemainingNodes = remainingNodes.some((entry) => entry.sourceAnchorId === anchorId)
+      const hasRemainingBookmark = bookmarks.some((bookmark) => bookmark.sourceAnchorId === anchorId)
+      const hasRemainingExcerpt = remainingExcerpts.some((excerpt) => excerpt.anchorId === anchorId)
+      const hasTags = (anchor.tags?.length ?? 0) > 0
+
+      if (!hasRemainingNodes && !hasRemainingBookmark && !hasRemainingExcerpt && !hasTags) {
+        anchorIdsToRemove.add(anchorId)
+        return
+      }
+
+      if (!hasRemainingNodes && !hasRemainingExcerpt && anchor.selectionColor) {
+        anchorIdsToFade.add(anchorId)
+      }
+    })
+
+    const remainingAnchors =
+      anchorIdsToRemove.size || anchorIdsToFade.size
+        ? anchors
+            .filter((anchor) => !anchorIdsToRemove.has(anchor.id))
+            .map((anchor) =>
+              anchorIdsToFade.has(anchor.id)
+                ? {
+                    ...anchor,
+                    selectionColor: undefined,
+                    updatedAt: new Date().toISOString()
+                  }
+                : anchor
+            )
+        : anchors
 
     setCanvasNodes(remainingNodes)
     setCanvasEdges(remainingEdges)
@@ -727,16 +855,19 @@ export function WorkspaceShell() {
     if (excerptIdsToRemove.size) {
       setExcerpts(remainingExcerpts)
     }
-    if (shouldRemoveAnchor) {
+    if (anchorIdsToRemove.size || anchorIdsToFade.size) {
       setAnchors(remainingAnchors)
     }
 
-    if (activeNodeId && nodeIdsToRemove.has(activeNodeId)) {
-      setActiveNodeId(null)
-    }
-    if (activeAnchorId === anchorId) {
-      setActiveAnchorId(null)
-    }
+    setActiveNodeId((current) => (current && nodeIdsToRemove.has(current) ? null : current))
+    setActiveTextEditingNodeId((current) => (current && nodeIdsToRemove.has(current) ? null : current))
+    setPendingTextAutofocusNodeId((current) => (current && nodeIdsToRemove.has(current) ? null : current))
+    setActiveAnchorId((current) => {
+      if (!current || !anchorIdsToConsider.has(current)) {
+        return current
+      }
+      return remainingAnchors.some((anchor) => anchor.id === current && anchor.selectionColor) ? current : null
+    })
     setActiveEdgeId((current) => {
       if (!current) {
         return current
@@ -745,95 +876,49 @@ export function WorkspaceShell() {
     })
   }
 
-  function removeHighlightByAnchorId(anchorId: string) {
-    const nodesToRemove = canvasNodes.filter((entry) => entry.sourceAnchorId === anchorId)
-    const nodeIdsToRemove = new Set(nodesToRemove.map((node) => node.id))
-    const excerptIdsToConsider = new Set(nodesToRemove.map((node) => node.excerptId).filter(Boolean) as string[])
+  function removeExcerptByAnchorId(anchorId: string) {
+    const nodeIdsToRemove = canvasNodes
+      .filter((entry) => entry.sourceAnchorId === anchorId)
+      .map((node) => node.id)
 
-    const remainingNodes = canvasNodes.filter((entry) => entry.sourceAnchorId !== anchorId)
-    const remainingEdges = canvasEdges.filter((edge) => !nodeIdsToRemove.has(edge.targetNodeId))
-    const remainingWorkspaceLinks = workspaceLinks.filter(
-      (link) => !nodeIdsToRemove.has(link.fromNodeId) && !nodeIdsToRemove.has(link.toNodeId)
-    )
-
-    const excerptIdsToRemove = new Set<string>()
-    excerptIdsToConsider.forEach((excerptId) => {
-      if (!remainingNodes.some((entry) => entry.excerptId === excerptId)) {
-        excerptIdsToRemove.add(excerptId)
-      }
-    })
-
-    const remainingExcerpts = excerptIdsToRemove.size
-      ? excerpts.filter((excerpt) => excerpt.anchorId !== anchorId && !excerptIdsToRemove.has(excerpt.id))
-      : excerpts.filter((excerpt) => excerpt.anchorId !== anchorId)
-
-    const remainingBookmarks = bookmarks.filter((bookmark) => bookmark.sourceAnchorId !== anchorId)
-    const remainingAnchors = anchors.filter((anchor) => anchor.id !== anchorId)
-
-    setCanvasNodes(remainingNodes)
-    setCanvasEdges(remainingEdges)
-    setWorkspaceLinks(remainingWorkspaceLinks)
-    setBookmarks(remainingBookmarks)
-    setAnchors(remainingAnchors)
-    setExcerpts(remainingExcerpts)
-
-    if (activeAnchorId === anchorId) {
-      setActiveAnchorId(null)
-    }
-    if (activeNodeId && nodeIdsToRemove.has(activeNodeId)) {
-      setActiveNodeId(null)
-    }
-    setActiveEdgeId((current) => {
-      if (!current) {
-        return current
-      }
-      return remainingEdges.some((edge) => edge.id === current) ? current : null
-    })
+    removeCanvasNodesById(nodeIdsToRemove)
   }
 
   function normalizeSelectionText(input: string) {
     return input.replace(/\s+/g, ' ').trim().toLowerCase()
   }
 
-  function removeHighlightsByAnchorIds(anchorIds: string[]) {
-    const idsToRemove = new Set(anchorIds)
-    if (idsToRemove.size === 0) {
+  function clearHighlightsByAnchorIds(anchorIds: string[]) {
+    const idsToClear = new Set(anchorIds)
+    if (idsToClear.size === 0) {
       return
     }
 
-    const nodesToRemove = canvasNodes.filter((entry) => entry.sourceAnchorId && idsToRemove.has(entry.sourceAnchorId))
-    const nodeIdsToRemove = new Set(nodesToRemove.map((node) => node.id))
+    setAnchors((current) =>
+      current.flatMap((anchor) => {
+        if (!idsToClear.has(anchor.id)) {
+          return [anchor]
+        }
 
-    const remainingNodes = canvasNodes.filter((entry) => !(entry.sourceAnchorId && idsToRemove.has(entry.sourceAnchorId)))
-    const remainingEdges = canvasEdges.filter(
-      (edge) => !idsToRemove.has(edge.sourceAnchorId) && !nodeIdsToRemove.has(edge.targetNodeId)
+        const hasRelatedArtifacts =
+          excerpts.some((excerpt) => excerpt.anchorId === anchor.id) ||
+          bookmarks.some((bookmark) => bookmark.sourceAnchorId === anchor.id) ||
+          canvasNodes.some((node) => node.sourceAnchorId === anchor.id)
+        const hasTags = (anchor.tags?.length ?? 0) > 0
+
+        if (!hasRelatedArtifacts && !hasTags) {
+          return []
+        }
+
+        return [
+          {
+            ...anchor,
+            selectionColor: undefined,
+            updatedAt: new Date().toISOString()
+          }
+        ]
+      })
     )
-    const remainingWorkspaceLinks = workspaceLinks.filter(
-      (link) => !nodeIdsToRemove.has(link.fromNodeId) && !nodeIdsToRemove.has(link.toNodeId)
-    )
-    const remainingBookmarks = bookmarks.filter((bookmark) => !idsToRemove.has(bookmark.sourceAnchorId))
-    const remainingAnchors = anchors.filter((anchor) => !idsToRemove.has(anchor.id))
-    const remainingExcerpts = excerpts.filter((excerpt) => !idsToRemove.has(excerpt.anchorId))
-
-    setCanvasNodes(remainingNodes)
-    setCanvasEdges(remainingEdges)
-    setWorkspaceLinks(remainingWorkspaceLinks)
-    setBookmarks(remainingBookmarks)
-    setAnchors(remainingAnchors)
-    setExcerpts(remainingExcerpts)
-
-    if (activeAnchorId && idsToRemove.has(activeAnchorId)) {
-      setActiveAnchorId(null)
-    }
-    if (activeNodeId && nodeIdsToRemove.has(activeNodeId)) {
-      setActiveNodeId(null)
-    }
-    setActiveEdgeId((current) => {
-      if (!current) {
-        return current
-      }
-      return remainingEdges.some((edge) => edge.id === current) ? current : null
-    })
   }
 
   function removeHighlightBySelectionIdentity(selection: SelectionArtifactInput, fallbackAnchorId: string) {
@@ -849,35 +934,109 @@ export function WorkspaceShell() {
     })
 
     const ids = new Set<string>([fallbackAnchorId, ...matches.map((a) => a.id)])
-    removeHighlightsByAnchorIds(Array.from(ids))
+    clearHighlightsByAnchorIds(Array.from(ids))
   }
 
   const clearFocusAll = () => {
     focusBoth(null, null, null)
   }
 
-  function resolveAnchorColor(anchorId: string) {
-    return (
-      canvasNodes.find((node) => node.sourceAnchorId === anchorId)?.selectionColor ??
-      excerpts.find((excerpt) => excerpt.anchorId === anchorId)?.selectionColor ??
-      bookmarks.find((bookmark) => bookmark.sourceAnchorId === anchorId)?.selectionColor ??
-      anchors.find((anchor) => anchor.id === anchorId)?.selectionColor ??
-      '#5d5df6'
+  const visibleCanvasNodes = useMemo(
+    () => canvasNodes.filter((node) => node.visible !== false),
+    [canvasNodes]
+  )
+
+  const tagIndex = useMemo(() => {
+    const index = new Map<string, TagIndexEntry>()
+
+    const add = (tag: string, bucket: keyof TagIndexEntry, id: string) => {
+      const normalized = tag.trim()
+      if (!normalized) {
+        return
+      }
+
+      const entry = index.get(normalized) ?? {
+        highlights: [],
+        excerpts: [],
+        comments: [],
+        bookmarks: []
+      }
+
+      if (!entry[bucket].includes(id)) {
+        entry[bucket].push(id)
+      }
+      index.set(normalized, entry)
+    }
+
+    anchors.forEach((anchor) => (anchor.tags ?? []).forEach((tag) => add(tag, 'highlights', anchor.id)))
+    excerpts.forEach((excerpt) => (excerpt.tags ?? []).forEach((tag) => add(tag, 'excerpts', excerpt.id)))
+    bookmarks.forEach((bookmark) => (bookmark.tags ?? []).forEach((tag) => add(tag, 'bookmarks', bookmark.id)))
+    canvasNodes.forEach((node) =>
+      (node.tags ?? []).forEach((tag) => add(tag, node.kind === 'comment' ? 'comments' : 'excerpts', node.id))
     )
-  }
+
+    return index
+  }, [anchors, bookmarks, canvasNodes, excerpts])
+
+  const activeTagEntry = activeTag ? tagIndex.get(activeTag) ?? null : null
+  const filteredAnchorIds = useMemo(() => {
+    const ids = new Set(activeTagEntry?.highlights ?? [])
+    ;(activeTagEntry?.excerpts ?? []).forEach((excerptId) => {
+      const anchorId = excerpts.find((excerpt) => excerpt.id === excerptId)?.anchorId
+      if (anchorId) {
+        ids.add(anchorId)
+      }
+    })
+    ;(activeTagEntry?.bookmarks ?? []).forEach((bookmarkId) => {
+      const anchorId = bookmarks.find((bookmark) => bookmark.id === bookmarkId)?.sourceAnchorId
+      if (anchorId) {
+        ids.add(anchorId)
+      }
+    })
+    ;(activeTagEntry?.comments ?? []).forEach((nodeId) => {
+      const anchorId = canvasNodes.find((node) => node.id === nodeId)?.sourceAnchorId
+      if (anchorId) {
+        ids.add(anchorId)
+      }
+    })
+    return ids
+  }, [activeTagEntry, bookmarks, canvasNodes, excerpts])
+  const filteredExcerptIds = useMemo(
+    () => new Set(activeTagEntry?.excerpts ?? []),
+    [activeTagEntry]
+  )
+  const filteredCommentIds = useMemo(
+    () => new Set(activeTagEntry?.comments ?? []),
+    [activeTagEntry]
+  )
+  const filteredBookmarkIds = useMemo(
+    () => new Set(activeTagEntry?.bookmarks ?? []),
+    [activeTagEntry]
+  )
+
+  const resolveAnchorMarkerColor = useCallback(
+    (anchorId: string) => {
+      return (
+        anchors.find((anchor) => anchor.id === anchorId)?.selectionColor ??
+        excerpts.find((excerpt) => excerpt.anchorId === anchorId)?.selectionColor ??
+        bookmarks.find((bookmark) => bookmark.sourceAnchorId === anchorId)?.selectionColor ??
+        '#5d5df6'
+      )
+    },
+    [anchors, bookmarks, excerpts]
+  )
 
   const highlightedAnchors = useMemo(
     () =>
-      anchors.map((anchor) => ({
-        anchorId: anchor.id,
-        pageNumber: anchor.pageNumber,
-        boundingBox: anchor.boundingBox,
-        quadPoints: anchor.quadPoints,
-        viewportScale: anchor.viewportScale,
-        selectionColor: resolveAnchorColor(anchor.id),
-        tags: anchor.tags
-      })),
-    [anchors, bookmarks, canvasNodes, excerpts]
+      buildSourceHighlightDescriptors({
+        anchors,
+        excerpts,
+        bookmarks,
+        canvasNodes,
+        activeTag,
+        filteredAnchorIds
+      }),
+    [activeTag, anchors, bookmarks, canvasNodes, excerpts, filteredAnchorIds]
   )
 
   const anchorNodeIds = useMemo(() => {
@@ -911,68 +1070,223 @@ export function WorkspaceShell() {
       return null
     }
   }, [activeNodeId, anchorNodeIds])
-  const activeNode = useMemo(
-    () => canvasNodes.find((node) => node.id === activeNodeId) ?? null,
-    [activeNodeId, canvasNodes]
+
+  const filteredWorkspaceNodes = useMemo(() => {
+    if (!activeTag) {
+      return visibleCanvasNodes
+    }
+
+    return visibleCanvasNodes.filter((node) => {
+      if (node.kind === 'comment') {
+        return filteredCommentIds.has(node.id)
+      }
+      return filteredExcerptIds.has(node.id)
+    })
+  }, [activeTag, filteredCommentIds, filteredExcerptIds, visibleCanvasNodes])
+
+  const filteredExcerptNodes = useMemo(
+    () => filteredWorkspaceNodes.filter((node) => node.kind === 'excerpt' && node.sourceAnchorId),
+    [filteredWorkspaceNodes]
   )
-  const activeToolbarPosition = useMemo(() => {
-    if (!activeNode || !workspaceRect) {
-      return { left: 18, top: 18 }
+
+  const filteredBookmarks = useMemo(() => {
+    if (!activeTag) {
+      return bookmarks
     }
+    return bookmarks.filter((bookmark) => filteredBookmarkIds.has(bookmark.id))
+  }, [activeTag, bookmarks, filteredBookmarkIds])
 
-    const toolbarWidth = 980
-    const toolbarHeight = 60
-    const preferredLeft = activeNode.x + activeNode.width / 2 - toolbarWidth / 2
-    const preferredTop = activeNode.y - toolbarHeight - 12
-
-    return {
-      left: Math.max(18, Math.min(preferredLeft, Math.max(18, workspaceRect.width - toolbarWidth - 18))),
-      top: Math.max(18, preferredTop)
-    }
-  }, [activeNode, workspaceRect])
-
-  const focusActiveNodeEditor = useCallback(() => {
-    if (!activeNodeId || !workspacePaneRef.current) {
+  useEffect(() => {
+    if (!activeNodeId) {
       return
     }
 
-    const editor = workspacePaneRef.current.querySelector<HTMLElement>(
-      `[data-node-id="${activeNodeId}"] [data-node-editor="true"]`
+    if (filteredWorkspaceNodes.some((node) => node.id === activeNodeId)) {
+      return
+    }
+
+    setActiveTextEditingNodeId((current) => (current === activeNodeId ? null : current))
+    setPendingTextAutofocusNodeId((current) => (current === activeNodeId ? null : current))
+    setActiveNodeId(null)
+  }, [activeNodeId, filteredWorkspaceNodes])
+
+  const activeWorkspaceTextToolbarNode = useMemo(() => {
+    if (!activeNodeId || activeTextEditingNodeId) {
+      return null
+    }
+
+    const node = filteredWorkspaceNodes.find((entry) => entry.id === activeNodeId) ?? null
+    if (!node || (node.kind !== 'excerpt' && node.kind !== 'comment')) {
+      return null
+    }
+
+    return node
+  }, [activeNodeId, activeTextEditingNodeId, filteredWorkspaceNodes])
+
+  const workspaceTextToolbarPosition = useMemo(() => {
+    const node = activeWorkspaceTextToolbarNode
+    const pane = workspaceRect
+    if (!node || !pane) {
+      return null
+    }
+
+    const left = Math.max(18, Math.min(pane.width - 36, node.x * workspaceViewport.zoom + workspaceViewport.panX + 24))
+    const top = Math.max(18, node.y * workspaceViewport.zoom + workspaceViewport.panY - 84)
+
+    return { left, top }
+  }, [activeWorkspaceTextToolbarNode, workspaceRect, workspaceViewport.panX, workspaceViewport.panY, workspaceViewport.zoom])
+
+  const updateActiveToolbarNode = useCallback((updater: (node: CanvasNode) => CanvasNode) => {
+    if (!activeWorkspaceTextToolbarNode) {
+      return
+    }
+
+    setCanvasNodes((current) =>
+      current.map((entry) => (entry.id === activeWorkspaceTextToolbarNode.id ? updater(entry) : entry))
     )
-    if (!editor) {
+  }, [activeWorkspaceTextToolbarNode])
+
+  const removeActiveToolbarNode = useCallback(() => {
+    const node = activeWorkspaceTextToolbarNode
+    if (!node) {
       return
     }
 
-    editor.focus()
-    const selection = window.getSelection()
-    if (!selection) {
+    removeCanvasNodesById([node.id])
+    focusBoth(node.sourceAnchorId ?? null, null, null)
+  }, [activeWorkspaceTextToolbarNode])
+
+  const copyActiveToolbarNode = useCallback(async () => {
+    const node = activeWorkspaceTextToolbarNode
+    if (!node || typeof navigator === 'undefined' || !navigator.clipboard) {
       return
     }
 
-    const range = document.createRange()
-    range.selectNodeContents(editor)
-    range.collapse(false)
-    selection.removeAllRanges()
-    selection.addRange(range)
-  }, [activeNodeId])
+    try {
+      await navigator.clipboard.writeText(node.text ?? '')
+    } catch (error) {
+      console.error('[WorkspaceShell] failed to copy workspace node text', { nodeId: node.id }, error)
+    }
+  }, [activeWorkspaceTextToolbarNode])
 
-  const handleEditActiveNode = useCallback(() => {
-    if (!activeNode) {
+  const copyActiveToolbarNodeLink = useCallback(async () => {
+    const node = activeWorkspaceTextToolbarNode
+    if (!node || typeof navigator === 'undefined' || !navigator.clipboard) {
       return
     }
 
-    setActiveNodeId(activeNode.id)
-    focusActiveNodeEditor()
-  }, [activeNode, focusActiveNodeEditor])
+    const linkTarget = node.sourceAnchorId ? `anchor:${node.sourceAnchorId}` : `node:${node.id}`
+    try {
+      await navigator.clipboard.writeText(linkTarget)
+    } catch (error) {
+      console.error('[WorkspaceShell] failed to copy workspace node link', { nodeId: node.id, linkTarget }, error)
+    }
+  }, [activeWorkspaceTextToolbarNode])
+
+  const cutActiveToolbarNode = useCallback(async () => {
+    await copyActiveToolbarNode()
+    removeActiveToolbarNode()
+  }, [copyActiveToolbarNode, removeActiveToolbarNode])
+
+  const promoteActiveToolbarNodeToChild = useCallback(() => {
+    const node = activeWorkspaceTextToolbarNode
+    if (!node) {
+      return
+    }
+
+    updateActiveToolbarNode((entry) => ({
+      ...entry,
+      tags: Array.from(new Set([...(entry.tags ?? []), 'child-workspace'])),
+      updatedAt: new Date().toISOString()
+    }))
+  }, [activeWorkspaceTextToolbarNode, updateActiveToolbarNode])
+
+  const commentFromActiveToolbarNode = useCallback(() => {
+    const node = activeWorkspaceTextToolbarNode
+    if (!node?.sourceAnchorId) {
+      return
+    }
+
+    const excerpt =
+      excerpts.find((entry) => entry.id === node.excerptId) ??
+      excerpts.find((entry) => entry.anchorId === node.sourceAnchorId)
+    const anchor = anchors.find((entry) => entry.id === node.sourceAnchorId)
+    if (!excerpt || !anchor) {
+      return
+    }
+
+    const viewportRatio = workspaceRect
+      ? Math.max(0.04, Math.min(0.94, (node.y * workspaceViewport.zoom + workspaceViewport.panY) / Math.max(1, workspaceRect.height)))
+      : 0.28
+    createCommentNode(excerpt, anchor, viewportRatio)
+  }, [activeWorkspaceTextToolbarNode, anchors, excerpts, workspaceRect, workspaceViewport.panY, workspaceViewport.zoom])
+
+  const editActiveToolbarNode = useCallback(() => {
+    const node = activeWorkspaceTextToolbarNode
+    if (!node) {
+      return
+    }
+
+    focusBoth(node.sourceAnchorId ?? null, node.id)
+    if (node.kind !== 'comment') {
+      return
+    }
+
+    requestAnimationFrame(() => {
+      const editor = document.querySelector<HTMLElement>(`.workspace-comment-node[data-node-id="${node.id}"] [data-node-editor="true"]`)
+      editor?.focus()
+    })
+  }, [activeWorkspaceTextToolbarNode])
 
   return (
-    <main ref={shellRef} className="workspace-shell">
+    <main
+      ref={shellRef}
+      className="workspace-shell"
+      style={{
+        '--document-pane-width': `${documentPaneWidth}px`,
+        width: `calc(100vw / ${appZoom})`,
+        height: `calc(100dvh / ${appZoom})`,
+        minHeight: `calc(100dvh / ${appZoom})`,
+        maxHeight: `calc(100dvh / ${appZoom})`,
+        transform: `scale(${appZoom})`,
+        transformOrigin: 'top left'
+      } as CSSProperties & Record<'--document-pane-width', string>}
+    >
       <header className="workspace-header">
         <div>
           <div className="split-title">Document Intelligence Workspace</div>
           <strong>Selection → action popup → workspace node → linked navigation</strong>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div className="workspace-header-actions">
+          <div className="workspace-zoom-controls" aria-label="Whole page zoom controls">
+            <button
+              className="document-button workspace-zoom-button"
+              type="button"
+              aria-label="Zoom out whole page"
+              onClick={appZoomOut}
+              title="Zoom out the whole page"
+            >
+              -
+            </button>
+            <button
+              className="document-button workspace-zoom-button workspace-zoom-reset"
+              type="button"
+              aria-label="Reset whole page zoom"
+              onClick={appZoomReset}
+              title="Reset whole page zoom"
+            >
+              {Math.round(appZoom * 100)}%
+            </button>
+            <button
+              className="document-button workspace-zoom-button"
+              type="button"
+              aria-label="Zoom in whole page"
+              onClick={appZoomIn}
+              title="Zoom in the whole page"
+            >
+              +
+            </button>
+          </div>
           <button
             className="document-button"
             type="button"
@@ -984,29 +1298,40 @@ export function WorkspaceShell() {
         </div>
       </header>
 
-      <section ref={documentPaneRef} className="workspace-panel document-pane">
+      <section
+        ref={documentPaneRef}
+        className="workspace-panel document-pane"
+        onPointerEnter={() => markZoomPane('document')}
+        onPointerDownCapture={() => markZoomPane('document')}
+        onFocusCapture={() => markZoomPane('document')}
+      >
         <PdfViewer
           shellRef={shellRef}
           workspaceId={WORKSPACE_ID}
           documentState={documentState}
           anchors={anchors}
           highlightedAnchors={highlightedAnchors}
-          bookmarks={bookmarks}
-          excerptNodes={canvasNodes
-            .filter((n) => n.kind === 'excerpt' && n.sourceAnchorId)
+          bookmarks={filteredBookmarks}
+          linkedNodes={filteredWorkspaceNodes
             .map((n) => ({
               id: n.id,
               sourceAnchorId: n.sourceAnchorId!,
-              title: n.title ?? 'Excerpt',
+              title: n.title ?? (n.kind === 'comment' ? 'Comment' : 'Excerpt'),
               text: n.text ?? '',
               selectionColor: n.selectionColor ?? '#ffd400',
               tags: n.tags ?? []
             }))}
+          activeTag={activeTag}
+          pageZoom={pageZoom}
+          availableTags={Array.from(new Set([...STANDARD_TAGS, ...tagIndex.keys()])).sort((left, right) => left.localeCompare(right))}
+          onPageZoomChange={(nextZoom) => setPageZoom(clampPageZoom(nextZoom))}
+          onToggleTag={(tag) => setActiveTag((current) => (current === tag ? null : tag))}
+          onClearTagFilter={() => setActiveTag(null)}
           activeSourceFocus={
             activeAnchorId
               ? {
                   anchorId: activeAnchorId,
-                  selectionColor: resolveAnchorColor(activeAnchorId),
+                  selectionColor: resolveAnchorMarkerColor(activeAnchorId),
                   jumpKey: activeAnchorJumpKey
                 }
               : null
@@ -1020,6 +1345,8 @@ export function WorkspaceShell() {
             setCanvasEdges([])
             setActiveAnchorId(null)
             setActiveNodeId(null)
+            setActiveTextEditingNodeId(null)
+            setPendingTextAutofocusNodeId(null)
           }}
           onAutoExcerpt={({ selection, viewportRatio }) => {
             const { anchor, excerpt } = upsertAnchorAndExcerpt(selection)
@@ -1043,10 +1370,10 @@ export function WorkspaceShell() {
             const nextOrder =
               bookmarks.reduce((max, bookmark) => Math.max(max, bookmark.documentOrder), 0) + 1
             const bookmark = buildBookmark(selection, nextOrder)
-            setAnchors((current) => upsertById(current, anchor))
+            const bookmarkAnchor = upsertAnchorForBookmark(selection)
             setBookmarks((current) => upsertById(current, bookmark))
-            setActiveAnchorId(anchor.id)
-            const linkedNodeId = resolvePreferredNodeIdForAnchor(anchor.id)
+            setActiveAnchorId(bookmarkAnchor.id)
+            const linkedNodeId = resolvePreferredNodeIdForAnchor(bookmarkAnchor.id)
             setActiveNodeId(linkedNodeId)
           }}
           onRemoveExcerpt={(anchorId) => {
@@ -1065,12 +1392,36 @@ export function WorkspaceShell() {
         />
       </section>
 
+      <div
+        className="workspace-divider"
+        onPointerDown={(event) => {
+          event.preventDefault()
+          splitResizeRef.current = {
+            startX: event.clientX,
+            startWidth: documentPaneWidth
+          }
+        }}
+      />
+
       <section
         ref={workspacePaneRef}
         className="workspace-panel workspace-pane"
+        onPointerEnter={() => markZoomPane('workspace')}
+        onFocusCapture={() => markZoomPane('workspace')}
         onPointerDownCapture={(event) => {
-          const target = event.target as HTMLElement | null
-          if (!target || target.closest('.workspace-text-toolbar')) {
+          markZoomPane('workspace')
+          const target = event.target
+          if (!(target instanceof HTMLElement)) {
+            return
+          }
+
+          if (
+            target.closest('.workspace-text-toolbar') ||
+            target.closest('.workspace-textbox-toolbar') ||
+            target.closest('[data-node-editor="true"]') ||
+            target.closest('[contenteditable="true"]') ||
+            target.closest('button, input, textarea, select, option, [role="textbox"]')
+          ) {
             return
           }
 
@@ -1085,7 +1436,7 @@ export function WorkspaceShell() {
           }
 
           const node = canvasNodes.find((entry) => entry.id === nodeId)
-          if (!node) {
+          if (!node || node.kind === 'text') {
             return
           }
 
@@ -1093,11 +1444,21 @@ export function WorkspaceShell() {
         }}
       >
         <WorkspaceCanvas
+          workspaceId={WORKSPACE_ID}
           paneRef={workspacePaneRef}
-          canvasNodes={canvasNodes}
+          canvasNodes={filteredWorkspaceNodes}
           activeNodeId={activeNodeId}
+          activeTextEditingNodeId={activeTextEditingNodeId}
+          pendingTextAutofocusNodeId={pendingTextAutofocusNodeId}
           workspaceLinks={workspaceLinks}
+          viewport={workspaceViewport}
+          activeNote={notesOpen ? activeNote : null}
+          noteExcerpts={Array.from(excerptIndex.values())}
           onCanvasNodesChange={setCanvasNodes}
+          onActiveTextEditingNodeIdChange={setActiveTextEditingNodeId}
+          onPendingTextAutofocusNodeIdChange={setPendingTextAutofocusNodeId}
+          onViewportChange={setWorkspaceViewport}
+          onNoteChange={setActiveNote}
           onCreateWorkspaceLink={(fromNodeId, toNodeId) => {
             setWorkspaceLinks((current) => {
               if (current.some((link) => link.fromNodeId === fromNodeId && link.toNodeId === toNodeId)) {
@@ -1115,127 +1476,63 @@ export function WorkspaceShell() {
             setExcerpts((current) => upsertById(current, excerpt))
             createExcerptNode(excerpt, anchor, y / Math.max(1, workspaceRect?.height ?? 720), x, y)
           }}
+          onCreateTextBox={createTextBoxNode}
           onOpenAnchor={(anchorId, preferredNodeId) => {
             focusBoth(anchorId, resolvePreferredNodeIdForAnchor(anchorId, preferredNodeId))
           }}
-          onFocusNode={setActiveNodeId}
+          onFocusNode={(nodeId) => {
+            setActiveNodeId(nodeId)
+          }}
           onClearSelection={() => {
             focusBoth(null, null, null)
           }}
         />
-        <WorkspaceTextToolbar
-          node={activeNode}
-          left={activeToolbarPosition.left}
-          top={activeToolbarPosition.top}
-          onStyleChange={(stylePatch) => {
-            if (!activeNode) {
-              return
-            }
 
-            setCanvasNodes((current) =>
-              current.map((node) =>
-                node.id === activeNode.id
-                  ? {
-                      ...node,
-                      textStyle: {
-                        ...defaultTextStyle,
-                        ...(node.textStyle ?? {}),
-                        ...stylePatch
-                      },
-                      updatedAt: new Date().toISOString()
-                    }
-                  : node
-              )
-            )
-          }}
-          onColorChange={(color) => {
-            if (!activeNode) {
-              return
-            }
-            applyNodeLinkedUpdates(activeNode.id, { selectionColor: color })
-          }}
-          onCopy={() => {
-            if (activeNode?.text) {
-              void navigator.clipboard.writeText(activeNode.text)
-            }
-          }}
-          onCut={() => {
-            if (!activeNode) {
-              return
-            }
+        {activeWorkspaceTextToolbarNode && workspaceTextToolbarPosition ? (
+          <WorkspaceTextToolbar
+            node={activeWorkspaceTextToolbarNode}
+            left={workspaceTextToolbarPosition.left}
+            top={workspaceTextToolbarPosition.top}
+            onStyleChange={(stylePatch) => {
+              updateActiveToolbarNode((entry) => ({
+                ...entry,
+                textStyle: {
+                  ...(entry.textStyle ?? defaultTextStyle),
+                  ...stylePatch
+                },
+                updatedAt: new Date().toISOString()
+              }))
+            }}
+            onColorChange={(color) => {
+              updateActiveToolbarNode((entry) => ({
+                ...entry,
+                nodeColor: color,
+                updatedAt: new Date().toISOString()
+              }))
+            }}
+            onCopy={() => {
+              void copyActiveToolbarNode()
+            }}
+            onCut={() => {
+              void cutActiveToolbarNode()
+            }}
+            onCopyLink={() => {
+              void copyActiveToolbarNodeLink()
+            }}
+            onDelete={removeActiveToolbarNode}
+            onPromoteChild={promoteActiveToolbarNodeToChild}
+            onComment={commentFromActiveToolbarNode}
+            onEdit={editActiveToolbarNode}
+            onTagsChange={(tags) => {
+              updateActiveToolbarNode((entry) => ({
+                ...entry,
+                tags,
+                updatedAt: new Date().toISOString()
+              }))
+            }}
+          />
+        ) : null}
 
-            if (activeNode?.text) {
-              void navigator.clipboard.writeText(activeNode.text)
-            }
-            removeNodeAndCleanup(activeNode.id)
-          }}
-          onCopyLink={() => {
-            if (!activeNode?.sourceAnchorId || !documentState) {
-              return
-            }
-
-            const anchor = anchorIndex.get(activeNode.sourceAnchorId)
-            if (!anchor) {
-              return
-            }
-
-            void navigator.clipboard.writeText(buildAnchorLink(WORKSPACE_ID, documentState.record.id, anchor))
-          }}
-          onDelete={() => {
-            if (!activeNode) {
-              return
-            }
-            removeNodeAndCleanup(activeNode.id)
-          }}
-          onPromoteChild={() => {
-            if (!activeNode) {
-              return
-            }
-
-            const now = new Date().toISOString()
-            const duplicatedNode: CanvasNode = {
-              ...activeNode,
-              id: `${activeNode.id}-child-${Date.now()}`,
-              title: `Child · ${activeNode.title ?? 'Node'}`,
-              x: activeNode.x + 36,
-              y: activeNode.y + 36,
-              createdAt: now,
-              updatedAt: now
-            }
-
-            setCanvasNodes((current) => [...current, duplicatedNode])
-            if (duplicatedNode.sourceAnchorId) {
-              ensureEdge(duplicatedNode.sourceAnchorId, duplicatedNode.id, 'child', 'auto', duplicatedNode.selectionColor)
-            }
-            setActiveNodeId(duplicatedNode.id)
-          }}
-          onComment={() => {
-            if (!activeNode?.sourceAnchorId) {
-              return
-            }
-
-            const anchor = anchorIndex.get(activeNode.sourceAnchorId)
-            if (!anchor) {
-              return
-            }
-
-            const relatedExcerpt = activeNode.excerptId ? excerptIndex.get(activeNode.excerptId) : null
-            if (!relatedExcerpt) {
-              return
-            }
-
-            createCommentNode(relatedExcerpt, anchor, activeNode.y / Math.max(1, workspaceRect?.height ?? 720))
-          }}
-          onEdit={() => {
-            handleEditActiveNode()
-          }}
-          onTagsChange={(tags) => {
-            if (!activeNode) {
-              return
-            }
-            applyNodeLinkedUpdates(activeNode.id, { tags })
-          }}
-        />
       </section>
 
       <LinkLayer
@@ -1245,19 +1542,12 @@ export function WorkspaceShell() {
         anchorMetrics={anchorMetrics}
         nodes={canvasNodes}
         edges={canvasEdges}
+        workspacePanX={workspaceViewport.panX}
+        workspacePanY={workspaceViewport.panY}
+        workspaceZoom={workspaceViewport.zoom}
         activeAnchorId={activeAnchorId}
         activeEdgeId={activeEdgeId}
       />
-
-      {notesOpen ? (
-        <aside className="workspace-notes-overlay">
-          <NoteEditor
-            note={activeNote}
-            excerpts={Array.from(excerptIndex.values())}
-            onNoteChange={setActiveNote}
-          />
-        </aside>
-      ) : null}
     </main>
   )
 }

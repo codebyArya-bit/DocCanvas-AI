@@ -1,0 +1,53 @@
+- generic [ref=e1]:
+  - main [ref=e2]:
+    - generic [ref=e3]:
+      - generic [ref=e4]:
+        - generic [ref=e5]: Document Intelligence Workspace
+        - strong [ref=e6]: Selection → action popup → workspace node → linked navigation
+      - generic [ref=e7]:
+        - generic "Whole page zoom controls" [ref=e8]:
+          - button "Zoom out whole page" [active] [ref=e9] [cursor=pointer]: "-"
+          - button "Reset whole page zoom" [ref=e10] [cursor=pointer]: 90%
+          - button "Zoom in whole page" [ref=e11] [cursor=pointer]: +
+        - button "Notes" [ref=e12] [cursor=pointer]
+        - generic [ref=e13]: PDF.js • draggable workspace • SVG link layer
+    - generic [ref=e15]:
+      - generic [ref=e16]:
+        - generic [ref=e17]: Source Document
+        - generic [ref=e18]:
+          - button "Import PDF" [ref=e19] [cursor=pointer]
+          - generic [ref=e36]: textbox-toolbar-fixture.pdf
+          - generic "Page zoom controls" [ref=e37]:
+            - button "Zoom out page" [ref=e38] [cursor=pointer]: "-"
+            - button "Reset page zoom" [ref=e39] [cursor=pointer]: Page 100%
+            - button "Zoom in page" [ref=e40] [cursor=pointer]: +
+      - generic [ref=e20]:
+        - complementary [ref=e41]:
+          - generic [ref=e42]:
+            - generic [ref=e43]: Excerpts
+            - generic [ref=e44]: No excerpts yet.
+          - generic [ref=e45]:
+            - generic [ref=e46]: Bookmarks
+            - generic [ref=e47]: No bookmarks yet.
+          - generic [ref=e48]:
+            - generic [ref=e49]: Tags
+            - generic [ref=e50]: No tags yet.
+        - generic [ref=e52]:
+          - button [ref=e53] [cursor=pointer]
+          - button [ref=e54] [cursor=pointer]
+          - generic [ref=e55]: Textbox toolbar fixture document This PDF is used to verify workspace textbox toolbar behavior while a document is loaded. Selecting text in the source document should not break textbox toolbar interactions.
+          - generic:
+            - button "Open selection actions"
+            - button "Open selection actions"
+    - generic [ref=e27]:
+      - generic:
+        - generic: Workspace
+        - generic "Workspace zoom controls" [ref=e28]:
+          - button "Zoom out workspace" [ref=e29] [cursor=pointer]: −
+          - button "Zoom in workspace" [ref=e30] [cursor=pointer]: +
+      - generic "Workspace tools" [ref=e33]:
+        - button "Draw Textbox in Workspace" [ref=e34] [cursor=pointer]:
+          - generic [ref=e35]: AB+
+  - button "Open Next.js Dev Tools" [ref=e61] [cursor=pointer]:
+    - img [ref=e62]
+  - alert [ref=e65]

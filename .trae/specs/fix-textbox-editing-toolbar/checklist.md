@@ -1,0 +1,9 @@
+- [x] Toolbar appears on caret focus inside a Textbox (no highlighted range).
+- [x] Toolbar appears on highlighted selection inside a Textbox (single line).
+- [x] Toolbar appears on highlighted selection inside a Textbox (multi-line).
+- [x] Selecting different sentences/lines multiple times in the same Textbox keeps toolbar available and updates position.
+- [x] Enter edit mode → type → exit → re-enter edit mode works repeatedly without getting stuck.
+- [x] Clicking outside closes editing/toolbar appropriately; clicking back inside re-opens.
+- [x] Toolbar does not overflow off-screen on narrow viewports; controls remain usable.
+- [x] Toolbar clamps to viewport and flips above/below selection when needed.
+- [x] Typecheck passes for @workspace/web.

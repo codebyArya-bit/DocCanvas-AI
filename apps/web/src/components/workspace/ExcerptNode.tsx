@@ -1,44 +1,50 @@
 'use client'
 
-import { useEffect, useRef, type PointerEvent as ReactPointerEvent } from 'react'
+import { type PointerEvent as ReactPointerEvent } from 'react'
 import type { CanvasNode } from '@workspace/domain'
 import { getTextStyleCss } from './text-style'
+
+export type NodeResizeDirection =
+  | 'top'
+  | 'bottom'
+  | 'left'
+  | 'right'
+  | 'top-left'
+  | 'top-right'
+  | 'bottom-left'
+  | 'bottom-right'
 
 interface ExcerptNodeProps {
   node: CanvasNode
   active: boolean
-  onPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void
+  onHandlePointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void
   onSelect: () => void
-  onTextChange: (nextValue: string) => void
   onOpenAnchor: () => void
   onStartLink: (event: ReactPointerEvent<HTMLButtonElement>) => void
-  onStartResize: (event: ReactPointerEvent<HTMLButtonElement>) => void
+  onStartResize: (event: ReactPointerEvent<HTMLButtonElement>, direction: NodeResizeDirection) => void
 }
 
 export function ExcerptNode({
   node,
   active,
-  onPointerDown,
+  onHandlePointerDown,
   onSelect,
-  onTextChange,
   onOpenAnchor,
   onStartLink,
   onStartResize
 }: ExcerptNodeProps) {
-  const accentColor = node.selectionColor ?? '#ffd400'
+  const accentColor = node.nodeColor ?? node.selectionColor ?? '#ffd400'
   const textStyle = getTextStyleCss(node.textStyle)
-  const editorRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    const editor = editorRef.current
-    if (!editor) {
-      return
-    }
-
-    if (editor.textContent !== (node.text ?? '')) {
-      editor.textContent = node.text ?? ''
-    }
-  }, [node.text])
+  const resizeDirections: NodeResizeDirection[] = [
+    'top',
+    'bottom',
+    'left',
+    'right',
+    'top-left',
+    'top-right',
+    'bottom-left',
+    'bottom-right'
+  ]
 
   return (
     <div
@@ -51,23 +57,36 @@ export function ExcerptNode({
         minHeight: node.height,
         borderColor: accentColor
       }}
-      onPointerDown={onPointerDown}
+      onPointerDown={() => {
+        onSelect()
+      }}
       onClick={() => {
         onSelect()
       }}
     >
-      {/* Clickable left arrow — jumps to source sentence in the document */}
-      <button
-        type="button"
-        className="workspace-node-anchor-arrow"
-        style={{ borderRightColor: accentColor }}
-        title="Jump to source in document"
-        onClick={(e) => {
-          e.stopPropagation()
-          onOpenAnchor()
+      {node.sourceAnchorId ? (
+        <button
+          type="button"
+          className="workspace-node-anchor-arrow"
+          data-node-arrow-id={node.id}
+          style={{ borderRightColor: accentColor }}
+          title="Jump to source in document"
+          onClick={(e) => {
+            e.stopPropagation()
+            onOpenAnchor()
+          }}
+        />
+      ) : null}
+      <div
+        className="workspace-excerpt-handle"
+        onPointerDown={(event) => {
+          event.stopPropagation()
+          onHandlePointerDown(event)
         }}
-      />
-      <div className="workspace-node-title">{node.title ?? 'Excerpt'}</div>
+      >
+        <span style={{ color: accentColor }}>{node.title ?? 'Excerpt'}</span>
+        <span style={{ fontSize: 10, opacity: 0.5 }}>drag</span>
+      </div>
       <button
         type="button"
         className="workspace-node-link-handle"
@@ -78,22 +97,11 @@ export function ExcerptNode({
         }}
       />
       <div
-        ref={editorRef}
         className="workspace-node-copy"
-        contentEditable
-        suppressContentEditableWarning
         style={textStyle}
-        data-node-editor="true"
         onPointerDown={(event) => {
           event.stopPropagation()
           onSelect()
-        }}
-        onFocus={(event) => {
-          event.stopPropagation()
-          onSelect()
-        }}
-        onInput={(event) => {
-          onTextChange(event.currentTarget.textContent ?? '')
         }}
       >
         {node.text}
@@ -107,15 +115,18 @@ export function ExcerptNode({
           ))}
         </div>
       ) : null}
-      <button
-        type="button"
-        className="workspace-node-resize-handle"
-        title="Resize"
-        onPointerDown={(event) => {
-          event.stopPropagation()
-          onStartResize(event)
-        }}
-      />
+      {resizeDirections.map((direction) => (
+        <button
+          key={direction}
+          type="button"
+          className={`workspace-node-resize-handle workspace-node-resize-${direction}`}
+          title={`Resize ${direction}`}
+          onPointerDown={(event) => {
+            event.stopPropagation()
+            onStartResize(event, direction)
+          }}
+        />
+      ))}
     </div>
   )
 }

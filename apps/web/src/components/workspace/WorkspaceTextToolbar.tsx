@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import type { CanvasNode, TextStyle } from '@workspace/domain'
 
 interface WorkspaceTextToolbarProps {
@@ -54,6 +54,14 @@ export function WorkspaceTextToolbar({
   const style = node?.textStyle ?? {}
   const fontSize = style.fontSize ?? 16
 
+  const bindAction = (handler: () => void) => ({
+    onPointerDown: (event: ReactPointerEvent<HTMLElement>) => {
+      event.preventDefault()
+      event.stopPropagation()
+      handler()
+    }
+  })
+
   useEffect(() => {
     setTagsDraft((node?.tags ?? []).join(', '))
   }, [node?.id, node?.tags])
@@ -67,7 +75,7 @@ export function WorkspaceTextToolbar({
     [tagsDraft]
   )
 
-  if (!node) {
+  if (!node || (node.kind !== 'excerpt' && node.kind !== 'comment')) {
     return null
   }
 
@@ -86,27 +94,33 @@ export function WorkspaceTextToolbar({
       }}
     >
       <div className="workspace-text-toolbar-actions">
-        <button type="button" onClick={onComment}>Comment</button>
-        <button type="button" onClick={onEdit}>Edit</button>
-        <button type="button" onClick={onCopy}>Copy</button>
-        <button type="button" onClick={onCut}>Cut</button>
-        <button type="button" onClick={onCopyLink}>Copy Link</button>
-        <button type="button" onClick={onPromoteChild}>To Child Workspace</button>
-        <button type="button" onClick={onDelete}>Delete</button>
+        <button type="button" {...bindAction(onComment)}>Comment</button>
+        <button type="button" {...bindAction(onEdit)}>Edit</button>
+        <button type="button" {...bindAction(onCopy)}>Copy</button>
+        <button type="button" {...bindAction(onCut)}>Cut</button>
+        <button type="button" {...bindAction(onCopyLink)}>Copy Link</button>
+        <button type="button" {...bindAction(onPromoteChild)}>To Child Workspace</button>
+        <button type="button" {...bindAction(onDelete)}>Delete</button>
         <div className="workspace-text-toolbar-tag-wrap">
           <button
             type="button"
-            onClick={() => {
+            {...bindAction(() => {
               const nextTags = parsedTags.length ? parsedTags : node.tags?.length ? node.tags : ['tag']
               setTagsDraft(nextTags.join(', '))
               onTagsChange(nextTags)
-            }}
+            })}
           >
             Tags
           </button>
           <input
             value={tagsDraft}
             onChange={(event) => setTagsDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                onTagsChange(parsedTags)
+              }
+            }}
             onBlur={() => {
               onTagsChange(parsedTags)
             }}
@@ -122,20 +136,20 @@ export function WorkspaceTextToolbar({
             type="button"
             className="workspace-text-toolbar-swatch"
             style={{ background: color }}
-            onClick={() => onColorChange(color)}
+            {...bindAction(() => onColorChange(color))}
           />
         ))}
 
         <button
           type="button"
           className="workspace-text-toolbar-swatch workspace-text-toolbar-swatch-gradient"
-          onClick={() => onColorChange('#7c5cff')}
+          {...bindAction(() => onColorChange('#7c5cff'))}
         />
 
         <button
           type="button"
           className={`workspace-text-toolbar-icon${style.strikethrough ? ' is-active' : ''}`}
-          onClick={() => onStyleChange({ strikethrough: !style.strikethrough })}
+          {...bindAction(() => onStyleChange({ strikethrough: !style.strikethrough }))}
         >
           /
         </button>
@@ -144,7 +158,11 @@ export function WorkspaceTextToolbar({
           <button
             type="button"
             className={`workspace-text-toolbar-icon${toolsOpen ? ' is-active' : ''}`}
-            onClick={() => setToolsOpen((current) => !current)}
+            onPointerDown={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              setToolsOpen((current) => !current)
+            }}
           >
             Tt
           </button>
@@ -182,37 +200,51 @@ export function WorkspaceTextToolbar({
                 <button
                   type="button"
                   className={style.fontWeight === 'bold' ? 'is-active' : ''}
-                  onClick={() => onStyleChange({ fontWeight: style.fontWeight === 'bold' ? 'normal' : 'bold' })}
+                  {...bindAction(() =>
+                    onStyleChange({ fontWeight: style.fontWeight === 'bold' ? 'normal' : 'bold' })
+                  )}
                 >
                   B
                 </button>
                 <button
                   type="button"
                   className={style.underline ? 'is-active' : ''}
-                  onClick={() => onStyleChange({ underline: !style.underline })}
+                  {...bindAction(() => onStyleChange({ underline: !style.underline }))}
                 >
                   U
                 </button>
                 <button
                   type="button"
                   className={style.fontStyle === 'italic' ? 'is-active' : ''}
-                  onClick={() => onStyleChange({ fontStyle: style.fontStyle === 'italic' ? 'normal' : 'italic' })}
+                  {...bindAction(() =>
+                    onStyleChange({ fontStyle: style.fontStyle === 'italic' ? 'normal' : 'italic' })
+                  )}
                 >
                   I
                 </button>
                 <button
                   type="button"
                   className={style.strikethrough ? 'is-active' : ''}
-                  onClick={() => onStyleChange({ strikethrough: !style.strikethrough })}
+                  {...bindAction(() => onStyleChange({ strikethrough: !style.strikethrough }))}
                 >
                   S
                 </button>
               </div>
 
               <div className="workspace-text-toolbar-size">
-                <button type="button" onClick={() => onStyleChange({ fontSize: Math.max(10, fontSize - 1) })}>-</button>
+                <button
+                  type="button"
+                  {...bindAction(() => onStyleChange({ fontSize: Math.max(10, fontSize - 1) }))}
+                >
+                  -
+                </button>
                 <span>{fontSize}</span>
-                <button type="button" onClick={() => onStyleChange({ fontSize: Math.min(40, fontSize + 1) })}>+</button>
+                <button
+                  type="button"
+                  {...bindAction(() => onStyleChange({ fontSize: Math.min(40, fontSize + 1) }))}
+                >
+                  +
+                </button>
               </div>
             </div>
           ) : null}

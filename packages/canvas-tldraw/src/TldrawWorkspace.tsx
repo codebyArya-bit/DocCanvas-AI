@@ -57,6 +57,17 @@ const WorkspaceAdapter: React.FC<{ ydoc: Y.Doc }> = ({ ydoc }) => {
                 previewText: excerpt.previewText,
               }
             });
+          } else {
+            // Update existing shape properties
+            editor.updateShape({
+              id: existingShape.id,
+              props: {
+                w: node.width,
+                h: node.height,
+                excerptId: excerpt.id,
+                previewText: excerpt.previewText,
+              }
+            });
           }
         }
       });
@@ -65,11 +76,26 @@ const WorkspaceAdapter: React.FC<{ ydoc: Y.Doc }> = ({ ydoc }) => {
     nodesMap.observe(handleNodesChange);
     handleNodesChange(); // initial hydration
 
-    // 2. We would also listen to `editor.store.listen()` here to push 
-    // canvas drag events (x,y updates) BACK into the `ydoc` to sync to other users.
+    // 2. Listen to editor changes and push updates back to Yjs
+    const unsubscribe = editor.store.listen(() => {
+      const updatedNodes = editor.getShapes().filter((shape) => shape.type === 'excerpt');
+      updatedNodes.forEach((shape) => {
+        const node = nodesMap.get(shape.id);
+        if (node) {
+          nodesMap.set(shape.id, {
+            ...node,
+            x: shape.x,
+            y: shape.y,
+            width: shape.props.w,
+            height: shape.props.h,
+          });
+        }
+      });
+    });
 
     return () => {
       nodesMap.unobserve(handleNodesChange);
+      unsubscribe();
     };
   }, [editor, ydoc]);
 
