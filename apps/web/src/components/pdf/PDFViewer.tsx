@@ -2,13 +2,19 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from 'react'
 import type { Bookmark, PageAnchor } from '@workspace/domain'
+import bookmarkIcon from '../../bookmark.png'
 import type { PersistedPdfDocument } from '../../lib/workspace/workspace-state'
 import {
   resolveAnchorClientRects,
   restorePdfSelectionFromAnchor,
   type SelectionArtifactInput
 } from '../../lib/excerpts/pdf-selection'
-import { measureAnchorMetric, type AnchorViewportMetric } from './AnchorService'
+import {
+  getLiveAnchorElements,
+  measureAnchorMetric,
+  measureTextLayerSpanCenterY,
+  type AnchorViewportMetric
+} from './AnchorService'
 import { clampPopupPosition } from './AnchorService'
 import { SelectionManager, type SelectionPopupState } from './SelectionManager'
 
@@ -206,7 +212,11 @@ export interface HighlightDescriptor {
   tags?: string[]
   showHighlight?: boolean
   showMarker?: boolean
+  showBookmarkIcon?: boolean
+  showTagBadges?: boolean
 }
+
+type RenderedHighlightRect = { key: string; left: number; top: number; width: number; height: number }
 
 function buildRectsFromQuadPoints(highlight: HighlightDescriptor, viewportScale: number) {
   if (!highlight.quadPoints || highlight.quadPoints.length < 8) {
@@ -238,6 +248,10 @@ function buildRectsFromQuadPoints(highlight: HighlightDescriptor, viewportScale:
   }
 
   return rects
+}
+
+function getTopmostRect(rects: RenderedHighlightRect[]) {
+  return [...rects].sort((left, right) => left.top - right.top || left.left - right.left)[0] ?? null
 }
 
 function indexTextLayerSpans(textLayer: HTMLElement) {
@@ -486,6 +500,7 @@ export function PDFViewer({
       const popupPosition = clampPopupPosition({
         containerRect: rootRect,
         selectionRect: primaryRect,
+        selectionRects: anchorRects.length > 0 ? anchorRects : [primaryRect],
         popupWidth: 560,
         popupHeight: 124
       })
@@ -496,6 +511,12 @@ export function PDFViewer({
         width: primaryRect.width,
         height: primaryRect.height
       }
+      const selectionClientRects = (anchorRects.length > 0 ? anchorRects : [primaryRect]).map((rect) => ({
+        left: rect.left - rootRect.left + root.scrollLeft,
+        top: rect.top - rootRect.top + root.scrollTop,
+        width: rect.width,
+        height: rect.height
+      }))
 
       setPopupState({
         anchorId,
@@ -519,7 +540,8 @@ export function PDFViewer({
         viewportRatio:
           root.clientHeight > 0 ? (primaryRect.top - rootRect.top + root.scrollTop) / root.clientHeight : 0.25,
         tags: anchor.tags ?? [],
-        selectionBounds
+        selectionBounds,
+        selectionClientRects
       })
       restorePdfSelectionFromAnchor(pageElement, anchor)
       onOpenAnchor(anchorId)
@@ -536,10 +558,11 @@ export function PDFViewer({
 
     const measure = () => {
       const shellRect = shell.getBoundingClientRect()
+      const shellScale = shell.offsetWidth > 0 ? shellRect.width / shell.offsetWidth : 1
       const metrics: Record<string, AnchorViewportMetric> = {}
       anchors.forEach((anchor) => {
         const pageElement = pageElementMapRef.current.get(anchor.pageNumber) ?? null
-        const metric = measureAnchorMetric(anchor, pageElement, shellRect)
+        const metric = measureAnchorMetric(anchor, pageElement, shellRect, shellScale)
         if (metric) {
           metrics[anchor.id] = metric
         }
@@ -579,7 +602,7 @@ export function PDFViewer({
     return type === 'application/pdf' || name.endsWith('.pdf')
   }, [])
 
-  const clampZoom = useCallback((next: number) => Math.max(0.6, Math.min(3, Number(next.toFixed(2)))), [])
+  const clampZoom = useCallback((next: number) => Math.max(0.3, Math.min(3, Number(next.toFixed(2)))), [])
   const zoomIn = useCallback(() => onPageZoomChange(clampZoom(pageZoom + 0.1)), [clampZoom, onPageZoomChange, pageZoom])
   const zoomOut = useCallback(() => onPageZoomChange(clampZoom(pageZoom - 0.1)), [clampZoom, onPageZoomChange, pageZoom])
   const zoomReset = useCallback(() => onPageZoomChange(1), [onPageZoomChange])
@@ -802,7 +825,9 @@ export function PDFViewer({
                       type="button"
                       onClick={() => onOpenAnchor(bookmark.sourceAnchorId)}
                     >
-                      <span className="bookmark-chip" style={{ background: bookmark.selectionColor }} />
+                      <span className="bookmark-chip bookmark-chip-image">
+                        <img src={bookmarkIcon.src} alt="" />
+                      </span>
                       <span className="bookmark-item-body">
                         <span className="bookmark-item-title">{bookmark.bookmarkLabel}</span>
                         {bookmark.tags?.length ? (
@@ -878,9 +903,6 @@ export function PDFViewer({
                 pageHighlights={highlightedAnchors.filter((item) => item.pageNumber === pageNumber)}
                 focusedAnchor={focusedAnchor?.pageNumber === pageNumber ? focusedAnchor : null}
                 focusedColor={focusedAnchor?.pageNumber === pageNumber ? activeSourceFocus?.selectionColor ?? '#ffd400' : null}
-                pageBookmarks={bookmarks.filter((bookmark) => anchorIndex.get(bookmark.sourceAnchorId)?.pageNumber === pageNumber)}
-                bookmarkAnchors={anchorIndex}
-                onOpenAnchor={onOpenAnchor}
                 onEditAnchor={openAnchorPopup}
                 registerCanvas={registerCanvas}
                 registerPage={registerPage}
@@ -922,9 +944,6 @@ function PdfPage({
   pageHighlights,
   focusedAnchor,
   focusedColor,
-  pageBookmarks,
-  bookmarkAnchors,
-  onOpenAnchor,
   onEditAnchor,
   registerCanvas,
   registerPage,
@@ -939,9 +958,6 @@ function PdfPage({
   pageHighlights: HighlightDescriptor[]
   focusedAnchor: PageAnchor | null
   focusedColor: string | null
-  pageBookmarks: Bookmark[]
-  bookmarkAnchors: Map<string, PageAnchor>
-  onOpenAnchor: (anchorId: string) => void
   onEditAnchor: (anchorId: string) => void
   registerCanvas: (pageNumber: number, canvas: HTMLCanvasElement | null) => void
   registerPage: (pageNumber: number, page: HTMLDivElement | null) => void
@@ -982,6 +998,7 @@ function PdfPage({
   })
 
   const marginAnchors = useMemo(() => {
+    void highlightRenderTick
     const pageElement = pageRef.current
     if (!pageElement) {
       return []
@@ -991,23 +1008,29 @@ function PdfPage({
     return pageHighlights
       .filter((highlight) => highlight.showMarker !== false)
       .map((highlight) => {
-        const rects = resolveAnchorClientRects(pageElement, {
-          ...highlight,
-          viewportScale: highlight.viewportScale ?? viewportScale
-        })
-        const firstRect = rects[0]
-        if (!firstRect) {
+        const liveAnchor = getLiveAnchorElements(pageElement, highlight)
+        const startSpanCenterY = measureTextLayerSpanCenterY(pageElement, liveAnchor.startSpan)
+        const fallbackRect =
+          startSpanCenterY != null
+            ? null
+            : resolveAnchorClientRects(pageElement, {
+                ...highlight,
+                viewportScale: highlight.viewportScale ?? viewportScale
+              })[0] ?? null
+        if (startSpanCenterY == null && !fallbackRect) {
           return null
         }
 
         return {
           anchorId: highlight.anchorId,
-          top: firstRect.top - pageRect.top + firstRect.height / 2 - 5,
+          top:
+            startSpanCenterY ??
+            (fallbackRect ? fallbackRect.top - pageRect.top + fallbackRect.height / 2 : 0),
           color: highlight.selectionColor
         }
       })
       .filter((item): item is { anchorId: string; top: number; color: string } => Boolean(item))
-  }, [pageHighlights, viewportScale])
+  }, [highlightRenderTick, pageHighlights, viewportScale])
 
   const renderedHighlights = useMemo(() => {
     void highlightRenderTick
@@ -1348,10 +1371,10 @@ function PdfPage({
       onPointerUp={handlePointerUp}
       onPointerCancel={resetGesture}
     >
-      <div className="page-bookmark-margin">
+      <div className="page-anchor-margin page-anchor-margin-left">
         {marginAnchors.map((anchor) => (
           <button
-            key={`anchor-${anchor.anchorId}`}
+            key={`anchor-left-${anchor.anchorId}`}
             type="button"
             className="page-anchor-indicator"
             data-anchor-id={anchor.anchorId}
@@ -1359,29 +1382,9 @@ function PdfPage({
               top: anchor.top,
               background: anchor.color
             }}
-            onClick={() => onOpenAnchor(anchor.anchorId)}
+            onClick={() => onEditAnchor(anchor.anchorId)}
           />
         ))}
-        {pageBookmarks.map((bookmark) => {
-          const anchor = bookmarkAnchors.get(bookmark.sourceAnchorId)
-          if (!anchor) {
-            return null
-          }
-
-          const ratio = viewportScale / (anchor.viewportScale || viewportScale)
-          return (
-            <button
-              key={bookmark.id}
-              type="button"
-              className="page-bookmark-indicator"
-              style={{
-                top: anchor.boundingBox.y * ratio,
-                background: bookmark.selectionColor
-              }}
-              onClick={() => onOpenAnchor(bookmark.sourceAnchorId)}
-            />
-          )
-        })}
       </div>
       <div className="page-anchor-margin page-anchor-margin-right">
         {marginAnchors.map((anchor) => (
@@ -1394,7 +1397,7 @@ function PdfPage({
               top: anchor.top,
               background: anchor.color
             }}
-            onClick={() => onOpenAnchor(anchor.anchorId)}
+            onClick={() => onEditAnchor(anchor.anchorId)}
           />
         ))}
       </div>
@@ -1421,7 +1424,29 @@ function PdfPage({
             />
               ))
             : null}
-          {highlight.tags?.length ? (
+          {highlight.showBookmarkIcon ? (
+            (() => {
+              const bookmarkRect = getTopmostRect(highlight.rects)
+              if (!bookmarkRect) {
+                return null
+              }
+              return (
+                <button
+                  type="button"
+                  className="document-bookmark-symbol"
+                  style={{
+                    left: Math.max(0, bookmarkRect.left - 22),
+                    top: Math.max(0, bookmarkRect.top - 18)
+                  }}
+                  title="Open bookmark"
+                  onClick={() => onEditAnchor(highlight.anchorId)}
+                >
+                  <img src={bookmarkIcon.src} alt="" />
+                </button>
+              )
+            })()
+          ) : null}
+          {highlight.showTagBadges !== false && highlight.tags?.length ? (
             <div
               className="document-tag-badges"
               style={{

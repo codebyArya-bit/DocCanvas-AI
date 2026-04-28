@@ -8,6 +8,7 @@ import type { PersistedPdfDocument, WorkspacePersistenceState } from '../lib/wor
 import { createCanvasNode } from '../lib/workspace/canvas-node-crud'
 import { buildSourceHighlightDescriptors } from '../lib/workspace/source-highlight-descriptors'
 import { buildWorkspaceNodeLink, type WorkspaceNodeLink } from '../lib/workspace/node-links'
+import { ExportModal, type ExportData } from './export/ExportModal'
 import { WorkspaceCanvas } from './workspace/WorkspaceCanvas'
 import { WorkspaceTextToolbar } from './workspace/WorkspaceTextToolbar'
 import { PdfViewer } from './pdf/pdf-viewer'
@@ -16,6 +17,36 @@ import type { AnchorViewportMetric } from './pdf/AnchorService'
 
 const WORKSPACE_ID = 'workspace-1'
 const STANDARD_TAGS = ['important', 'question', 'evidence', 'counterpoint', 'defined-term', 'follow-up']
+
+async function writeClipboardText(text: string) {
+  if (typeof document === 'undefined') {
+    return false
+  }
+
+  try {
+    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+  } catch {}
+
+  const textArea = document.createElement('textarea')
+  textArea.value = text
+  textArea.setAttribute('readonly', '')
+  textArea.style.position = 'fixed'
+  textArea.style.left = '-9999px'
+  textArea.style.top = '0'
+  document.body.appendChild(textArea)
+  textArea.select()
+
+  try {
+    return document.execCommand('copy')
+  } catch {
+    return false
+  } finally {
+    document.body.removeChild(textArea)
+  }
+}
 
 const seedNote: Note = {
   id: 'note-1',
@@ -102,6 +133,7 @@ export function WorkspaceShell() {
   const [documentPaneRect, setDocumentPaneRect] = useState<DOMRect | null>(null)
   const [activeEdgeId, setActiveEdgeId] = useState<string | null>(null)
   const [notesOpen, setNotesOpen] = useState(false)
+  const [exportOpen, setExportOpen] = useState(false)
   const [activeAnchorJumpKey, setActiveAnchorJumpKey] = useState(0)
   const [activeTag, setActiveTag] = useState<string | null>(null)
   const [documentPaneWidth, setDocumentPaneWidth] = useState(540)
@@ -196,11 +228,11 @@ export function WorkspaceShell() {
   const workspaceZoomOut = useCallback(() => updateWorkspaceZoom(workspaceViewport.zoom - 0.1), [updateWorkspaceZoom, workspaceViewport.zoom])
   const workspaceZoomIn = useCallback(() => updateWorkspaceZoom(workspaceViewport.zoom + 0.1), [updateWorkspaceZoom, workspaceViewport.zoom])
   const workspaceZoomReset = useCallback(() => setWorkspaceViewport(DEFAULT_WORKSPACE_VIEWPORT), [])
-  const clampAppZoom = useCallback((nextZoom: number) => Math.max(0.75, Math.min(1.5, Number(nextZoom.toFixed(2)))), [])
+  const clampAppZoom = useCallback((nextZoom: number) => Math.max(0.4, Math.min(1.5, Number(nextZoom.toFixed(2)))), [])
   const appZoomOut = useCallback(() => setAppZoom((current) => clampAppZoom(current - 0.1)), [clampAppZoom])
   const appZoomIn = useCallback(() => setAppZoom((current) => clampAppZoom(current + 0.1)), [clampAppZoom])
   const appZoomReset = useCallback(() => setAppZoom(1), [])
-  const clampPageZoom = useCallback((nextZoom: number) => Math.max(0.6, Math.min(3, Number(nextZoom.toFixed(2)))), [])
+  const clampPageZoom = useCallback((nextZoom: number) => Math.max(0.3, Math.min(3, Number(nextZoom.toFixed(2)))), [])
   const pageZoomOut = useCallback(() => setPageZoom((current) => clampPageZoom(current - 0.1)), [clampPageZoom])
   const pageZoomIn = useCallback(() => setPageZoom((current) => clampPageZoom(current + 0.1)), [clampPageZoom])
   const pageZoomReset = useCallback(() => setPageZoom(1), [])
@@ -304,9 +336,9 @@ export function WorkspaceShell() {
       }
 
       const shellRect = shell.getBoundingClientRect()
-      const availableWidth = Math.max(880, shellRect.width - 48)
-      const nextWidth = resize.startWidth + (event.clientX - resize.startX)
-      setDocumentPaneWidth(Math.min(availableWidth - 320, Math.max(360, nextWidth)))
+      const scale = shell.offsetWidth > 0 ? shellRect.width / shell.offsetWidth : 1
+      const nextWidth = resize.startWidth + (event.clientX - resize.startX) / scale
+      setDocumentPaneWidth(Math.max(0, Math.min(shell.offsetWidth, nextWidth)))
     }
 
     function stopResize() {
@@ -416,10 +448,15 @@ export function WorkspaceShell() {
 
     setAnchors((current) => {
       const existingAnchor = current.find((anchor) => anchor.id === nextAnchor.id)
+      const hasHighlightOwner =
+        excerpts.some((excerpt) => excerpt.anchorId === nextAnchor.id) ||
+        canvasNodes.some(
+          (node) => node.sourceAnchorId === nextAnchor.id && (node.kind === 'excerpt' || node.kind === 'comment')
+        )
       const bookmarkAnchor = existingAnchor
         ? {
             ...nextAnchor,
-            selectionColor: existingAnchor.selectionColor,
+            selectionColor: hasHighlightOwner ? existingAnchor.selectionColor : undefined,
             tags: nextAnchor.tags?.length ? nextAnchor.tags : existingAnchor.tags
           }
         : nextAnchor
@@ -1039,6 +1076,57 @@ export function WorkspaceShell() {
     [activeTag, anchors, bookmarks, canvasNodes, excerpts, filteredAnchorIds]
   )
 
+  const exportData = useMemo<ExportData>(
+    () => ({
+      documentTitle: documentState?.record.title ?? 'Workspace Export',
+      sourceDocument: documentState
+        ? {
+            title: documentState.record.title,
+            pageCount: documentState.record.pageCount,
+            mimeType: documentState.record.mimeType,
+            bytes: documentState.bytes
+          }
+        : null,
+      annotations: highlightedAnchors.map((highlight) => {
+        const anchor = anchors.find((item) => item.id === highlight.anchorId)
+        const hasBookmark = bookmarks.some((bookmark) => bookmark.sourceAnchorId === highlight.anchorId)
+        const hasExcerpt = excerpts.some((excerpt) => excerpt.anchorId === highlight.anchorId)
+        const hasComment = canvasNodes.some(
+          (node) => node.sourceAnchorId === highlight.anchorId && node.kind === 'comment'
+        )
+        const kind = hasExcerpt ? 'excerpt' : hasComment ? 'comment' : hasBookmark ? 'bookmark' : 'text'
+
+        return {
+          id: highlight.anchorId,
+          kind,
+          pageNumber: highlight.pageNumber,
+          text: anchor?.textQuote ?? '',
+          color: highlight.selectionColor,
+          tags: highlight.tags ?? [],
+          boundingBox: highlight.boundingBox,
+          quadPoints: highlight.quadPoints,
+          viewportScale: highlight.viewportScale
+        }
+      }),
+      nodes: canvasNodes
+        .filter((node) => node.visible !== false)
+        .map((node) => ({
+          id: node.id,
+          kind: node.kind,
+          title: node.title,
+          text: node.text,
+          tags: node.tags ?? [],
+          sourceAnchorId: node.sourceAnchorId,
+          selectionColor: node.selectionColor,
+          nodeColor: node.nodeColor,
+          x: node.x,
+          y: node.y
+        })),
+      links: workspaceLinks
+    }),
+    [anchors, bookmarks, canvasNodes, documentState, excerpts, highlightedAnchors, workspaceLinks]
+  )
+
   const anchorNodeIds = useMemo(() => {
     const grouped = new Map<string, string[]>()
     canvasNodes.forEach((node) => {
@@ -1158,34 +1246,28 @@ export function WorkspaceShell() {
 
   const copyActiveToolbarNode = useCallback(async () => {
     const node = activeWorkspaceTextToolbarNode
-    if (!node || typeof navigator === 'undefined' || !navigator.clipboard) {
-      return
+    if (!node) {
+      return false
     }
 
-    try {
-      await navigator.clipboard.writeText(node.text ?? '')
-    } catch (error) {
-      console.error('[WorkspaceShell] failed to copy workspace node text', { nodeId: node.id }, error)
-    }
+    return writeClipboardText(node.text ?? '')
   }, [activeWorkspaceTextToolbarNode])
 
   const copyActiveToolbarNodeLink = useCallback(async () => {
     const node = activeWorkspaceTextToolbarNode
-    if (!node || typeof navigator === 'undefined' || !navigator.clipboard) {
-      return
+    if (!node) {
+      return false
     }
 
     const linkTarget = node.sourceAnchorId ? `anchor:${node.sourceAnchorId}` : `node:${node.id}`
-    try {
-      await navigator.clipboard.writeText(linkTarget)
-    } catch (error) {
-      console.error('[WorkspaceShell] failed to copy workspace node link', { nodeId: node.id, linkTarget }, error)
-    }
+    return writeClipboardText(linkTarget)
   }, [activeWorkspaceTextToolbarNode])
 
   const cutActiveToolbarNode = useCallback(async () => {
-    await copyActiveToolbarNode()
-    removeActiveToolbarNode()
+    const copied = await copyActiveToolbarNode()
+    if (copied) {
+      removeActiveToolbarNode()
+    }
   }, [copyActiveToolbarNode, removeActiveToolbarNode])
 
   const promoteActiveToolbarNodeToChild = useCallback(() => {
@@ -1294,6 +1376,13 @@ export function WorkspaceShell() {
           >
             {notesOpen ? 'Hide Notes' : 'Notes'}
           </button>
+          <button
+            className="document-button"
+            type="button"
+            onClick={() => setExportOpen(true)}
+          >
+            Export
+          </button>
           <div className="split-title">PDF.js • draggable workspace • SVG link layer</div>
         </div>
       </header>
@@ -1372,7 +1461,7 @@ export function WorkspaceShell() {
             const bookmark = buildBookmark(selection, nextOrder)
             const bookmarkAnchor = upsertAnchorForBookmark(selection)
             setBookmarks((current) => upsertById(current, bookmark))
-            setActiveAnchorId(bookmarkAnchor.id)
+            setActiveAnchorId(null)
             const linkedNodeId = resolvePreferredNodeIdForAnchor(bookmarkAnchor.id)
             setActiveNodeId(linkedNodeId)
           }}
@@ -1545,8 +1634,15 @@ export function WorkspaceShell() {
         workspacePanX={workspaceViewport.panX}
         workspacePanY={workspaceViewport.panY}
         workspaceZoom={workspaceViewport.zoom}
+        appZoom={appZoom}
         activeAnchorId={activeAnchorId}
         activeEdgeId={activeEdgeId}
+      />
+      <ExportModal
+        open={exportOpen}
+        data={exportData}
+        onClose={() => setExportOpen(false)}
+        onCopyHtml={writeClipboardText}
       />
     </main>
   )

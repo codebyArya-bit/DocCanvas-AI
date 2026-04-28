@@ -14,6 +14,8 @@ export interface SourceHighlightDescriptor {
   tags?: string[]
   showHighlight: boolean
   showMarker: boolean
+  showBookmarkIcon: boolean
+  showTagBadges: boolean
 }
 
 export function buildSourceHighlightDescriptors(options: {
@@ -63,13 +65,20 @@ export function buildSourceHighlightDescriptors(options: {
       return filteredAnchorIds.has(anchor.id)
     })
     .map((anchor) => {
-      const hasColor = Boolean(anchor.selectionColor)
-      const hasTag = (anchor.tags?.length ?? 0) > 0
       const hasExcerpt = excerpts.some((excerpt) => excerpt.anchorId === anchor.id)
+      const hasExcerptOrCommentNode = canvasNodes.some(
+        (node) => node.sourceAnchorId === anchor.id && (node.kind === 'excerpt' || node.kind === 'comment')
+      )
       const hasBookmark = bookmarks.some((bookmark) => bookmark.sourceAnchorId === anchor.id)
-      const hasNode = canvasNodes.some((node) => node.sourceAnchorId === anchor.id)
+      const hasNonBookmarkTag = Boolean(
+        (anchor.tags?.length ?? 0) > 0 ||
+          excerpts.some((excerpt) => excerpt.anchorId === anchor.id && (excerpt.tags?.length ?? 0) > 0) ||
+          canvasNodes.some((node) => node.sourceAnchorId === anchor.id && (node.tags?.length ?? 0) > 0)
+      )
       const highlightColor = resolveHighlightColor(anchor.id)
-      const matchesActiveTag = Boolean(activeTag && filteredAnchorIds.has(anchor.id))
+      const matchesActiveTag = Boolean(activeTag && filteredAnchorIds.has(anchor.id) && hasNonBookmarkTag)
+      const showBookmarkOnly = hasBookmark && !hasExcerpt && !hasExcerptOrCommentNode && !hasNonBookmarkTag
+      const bookmarkColor = bookmarks.find((bookmark) => bookmark.sourceAnchorId === anchor.id)?.selectionColor
 
       return {
         anchorId: anchor.id,
@@ -81,10 +90,12 @@ export function buildSourceHighlightDescriptors(options: {
         endOffset: anchor.endOffset,
         quadPoints: anchor.quadPoints,
         viewportScale: anchor.viewportScale,
-        selectionColor: resolveMarkerColor(anchor.id),
+        selectionColor: showBookmarkOnly ? bookmarkColor ?? '#5d5df6' : resolveMarkerColor(anchor.id),
         tags: resolveTags(anchor.id),
-        showHighlight: Boolean(highlightColor) || matchesActiveTag,
-        showMarker: hasExcerpt || hasBookmark || hasNode
+        showHighlight: !showBookmarkOnly && (Boolean(highlightColor) || matchesActiveTag),
+        showMarker: hasExcerpt || hasExcerptOrCommentNode,
+        showBookmarkIcon: hasBookmark,
+        showTagBadges: !showBookmarkOnly
       }
     })
 }

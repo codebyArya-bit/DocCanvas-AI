@@ -14,6 +14,7 @@ interface LinkLayerProps {
   workspacePanX: number
   workspacePanY: number
   workspaceZoom: number
+  appZoom: number
   activeAnchorId: string | null
   activeEdgeId: string | null
 }
@@ -44,12 +45,24 @@ export function LinkLayer({
   workspacePanX,
   workspacePanY,
   workspaceZoom,
+  appZoom,
   activeAnchorId,
   activeEdgeId
 }: LinkLayerProps) {
   const lines = useMemo<LinkLine[]>(() => {
     if (!shellRect || !workspaceRect || !documentPaneRect) {
       return []
+    }
+    const scale = appZoom || 1
+    const workspaceLocalRect = {
+      left: (workspaceRect.left - shellRect.left) / scale,
+      top: (workspaceRect.top - shellRect.top) / scale,
+      right: (workspaceRect.right - shellRect.left) / scale,
+      bottom: (workspaceRect.bottom - shellRect.top) / scale
+    }
+    const documentLocalRect = {
+      top: (documentPaneRect.top - shellRect.top) / scale,
+      bottom: (documentPaneRect.bottom - shellRect.top) / scale
     }
 
     const nodeIndex = new Map(nodes.map((node) => [node.id, node]))
@@ -66,7 +79,10 @@ export function LinkLayer({
         }
         const rect = button.getBoundingClientRect()
         // Use the outward-most point (left edge) so the curve visibly "emanates" from the projection.
-        nodeArrowIndex.set(nodeId, { x: rect.left, y: rect.top + rect.height / 2 })
+        nodeArrowIndex.set(nodeId, {
+          x: (rect.left - shellRect.left) / scale,
+          y: (rect.top + rect.height / 2 - shellRect.top) / scale
+        })
       })
     }
 
@@ -80,26 +96,26 @@ export function LinkLayer({
       const measuredArrow = nodeArrowIndex.get(node.id) ?? null
       const nodeArrowTipVP = measuredArrow
         ? measuredArrow.x
-        : workspaceRect.left + workspacePanX + node.x * workspaceZoom
+        : workspaceLocalRect.left + workspacePanX + node.x * workspaceZoom
       const nodeArrowMidVP = measuredArrow
         ? measuredArrow.y
-        : workspaceRect.top + workspacePanY + node.y * workspaceZoom + 40 * workspaceZoom
+        : workspaceLocalRect.top + workspacePanY + node.y * workspaceZoom + 40 * workspaceZoom
 
       if (
-        nodeArrowTipVP < workspaceRect.left - 28 ||
-        nodeArrowTipVP > workspaceRect.right ||
-        nodeArrowMidVP < workspaceRect.top ||
-        nodeArrowMidVP > workspaceRect.bottom
+        nodeArrowTipVP < workspaceLocalRect.left - 28 ||
+        nodeArrowTipVP > workspaceLocalRect.right ||
+        nodeArrowMidVP < workspaceLocalRect.top ||
+        nodeArrowMidVP > workspaceLocalRect.bottom
       ) {
         return []
       }
       // Anchor endpoint comes from the real rendered page marker DOM (measured in AnchorService.measureAnchorMetric).
-      const anchorMarginVP = shellRect.left + anchor.centerX
-      const anchorMidVP = shellRect.top + anchor.centerY
+      const anchorMarginVP = anchor.centerX
+      const anchorMidVP = anchor.centerY
 
       if (
-        anchorMidVP < documentPaneRect.top + 16 ||
-        anchorMidVP > documentPaneRect.bottom - 16
+        anchorMidVP < documentLocalRect.top + 16 ||
+        anchorMidVP > documentLocalRect.bottom - 16
       ) {
         return []
       }
@@ -125,6 +141,7 @@ export function LinkLayer({
   }, [
     activeAnchorId,
     activeEdgeId,
+    appZoom,
     anchorMetrics,
     documentPaneRect,
     edges,
@@ -143,8 +160,8 @@ export function LinkLayer({
   return (
     <svg
       className="workspace-link-layer"
-      width={typeof window !== 'undefined' ? window.innerWidth : 1920}
-      height={typeof window !== 'undefined' ? window.innerHeight : 1080}
+      width={shellRect.width / (appZoom || 1)}
+      height={shellRect.height / (appZoom || 1)}
       style={{ overflow: 'visible' }}
     >
       <defs>

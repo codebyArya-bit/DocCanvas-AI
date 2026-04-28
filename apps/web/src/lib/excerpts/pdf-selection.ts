@@ -550,6 +550,7 @@ export function capturePdfSelection(root: HTMLElement): PdfSelection | null {
     return null
   }
 
+  const appScale = page.offsetWidth > 0 ? pageRect.width / page.offsetWidth : 1
   const pageNumber = Number(page.dataset.pageNumber ?? '0')
   const viewportScale = Number(page.dataset.viewportScale ?? '1')
   const startBoundary = resolveRangeBoundary(range, 'start')
@@ -565,20 +566,20 @@ export function capturePdfSelection(root: HTMLElement): PdfSelection | null {
       endSpanIndex: endBoundary?.index,
       endOffset: endBoundary?.offset,
       boundingBox: {
-        x: unionRect.left - pageRect.left,
-        y: unionRect.top - pageRect.top,
-        width: unionRect.width,
-        height: unionRect.height
+        x: (unionRect.left - pageRect.left) / appScale,
+        y: (unionRect.top - pageRect.top) / appScale,
+        width: unionRect.width / appScale,
+        height: unionRect.height / appScale
       },
       quadPoints: clientRects.flatMap((rect) => [
-        rect.left - pageRect.left,
-        rect.top - pageRect.top,
-        rect.right - pageRect.left,
-        rect.top - pageRect.top,
-        rect.right - pageRect.left,
-        rect.bottom - pageRect.top,
-        rect.left - pageRect.left,
-        rect.bottom - pageRect.top
+        (rect.left - pageRect.left) / appScale,
+        (rect.top - pageRect.top) / appScale,
+        (rect.right - pageRect.left) / appScale,
+        (rect.top - pageRect.top) / appScale,
+        (rect.right - pageRect.left) / appScale,
+        (rect.bottom - pageRect.top) / appScale,
+        (rect.left - pageRect.left) / appScale,
+        (rect.bottom - pageRect.top) / appScale
       ]),
       viewportScale,
       textQuote: selection.toString().replace(/\s+/g, ' ').trim()

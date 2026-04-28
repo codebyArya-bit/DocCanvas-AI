@@ -1,10 +1,10 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from 'react'
 import type { SelectionArtifactInput } from '../../lib/excerpts/pdf-selection'
 import { buildPageAnchor, capturePdfSelection, getVisibleSelectionClientRects } from '../../lib/excerpts/pdf-selection'
 import { ActionPopup } from './ActionPopup'
-import { clampPopupPosition } from './AnchorService'
+import { clampPopupPosition, getSelectionActionPopupPlacementMode } from './AnchorService'
 
 const WORKSPACE_INTERACTION_SELECTOR = [
   '.workspace-pane',
@@ -30,6 +30,7 @@ export interface SelectionPopupState {
     width: number
     height: number
   }
+  selectionClientRects?: SelectionRect[]
 }
 
 interface SelectionRect {
@@ -44,6 +45,9 @@ interface SelectionLoupeState {
   top: number
   text: string
   selectionColor: string
+  width: number
+  maxWidth: number
+  fontSize: number
 }
 
 interface SelectionManagerProps {
@@ -65,13 +69,7 @@ interface SelectionManagerProps {
 }
 
 function getSelectionRect(): DOMRect | null {
-  const selection = document.getSelection()
-  if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
-    return null
-  }
-
-  const range = selection.getRangeAt(0)
-  const rects = getVisibleSelectionClientRects(range)
+  const rects = getSelectionClientRects()
   if (rects.length === 0) {
     return null
   }
@@ -81,6 +79,16 @@ function getSelectionRect(): DOMRect | null {
   const right = Math.max(...rects.map((rect) => rect.right))
   const bottom = Math.max(...rects.map((rect) => rect.bottom))
   return new DOMRect(left, top, right - left, bottom - top)
+}
+
+function getSelectionClientRects(): DOMRect[] {
+  const selection = document.getSelection()
+  if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+    return []
+  }
+
+  const range = selection.getRangeAt(0)
+  return getVisibleSelectionClientRects(range)
 }
 
 function getSelectionRootNode(selection: Selection | null): Node | null {
@@ -113,16 +121,20 @@ function buildSelectionRects(root: HTMLDivElement, selection: SelectionArtifactI
 
   const rootRect = root.getBoundingClientRect()
   const pageRect = page.getBoundingClientRect()
-  const pageOffsetLeft = pageRect.left - rootRect.left + root.scrollLeft
-  const pageOffsetTop = pageRect.top - rootRect.top + root.scrollTop
+  const appScale = page.offsetWidth > 0 ? pageRect.width / page.offsetWidth : 1
+  const pageOffsetLeft = (pageRect.left - rootRect.left) / appScale + root.scrollLeft
+  const pageOffsetTop = (pageRect.top - rootRect.top) / appScale + root.scrollTop
+
+  const currentViewportScale = Number(page.dataset.viewportScale ?? '1')
+  const ratio = currentViewportScale / (selection.viewportScale || currentViewportScale)
 
   if (!selection.quadPoints || selection.quadPoints.length < 8) {
     return [
       {
-        left: pageOffsetLeft + selection.boundingBox.x,
-        top: pageOffsetTop + selection.boundingBox.y,
-        width: selection.boundingBox.width,
-        height: selection.boundingBox.height
+        left: pageOffsetLeft + selection.boundingBox.x * ratio,
+        top: pageOffsetTop + selection.boundingBox.y * ratio,
+        width: selection.boundingBox.width * ratio,
+        height: selection.boundingBox.height * ratio
       }
     ]
   }
@@ -137,14 +149,57 @@ function buildSelectionRects(root: HTMLDivElement, selection: SelectionArtifactI
     const xs = [quad[0], quad[2], quad[4], quad[6]]
     const ys = [quad[1], quad[3], quad[5], quad[7]]
     rects.push({
-      left: pageOffsetLeft + Math.min(...xs),
-      top: pageOffsetTop + Math.min(...ys),
-      width: Math.max(...xs) - Math.min(...xs),
-      height: Math.max(...ys) - Math.min(...ys)
+      left: pageOffsetLeft + Math.min(...xs) * ratio,
+      top: pageOffsetTop + Math.min(...ys) * ratio,
+      width: (Math.max(...xs) - Math.min(...xs)) * ratio,
+      height: (Math.max(...ys) - Math.min(...ys)) * ratio
     })
   }
 
   return rects
+}
+
+function getSelectionUnionRect(rects: SelectionRect[]): SelectionRect | null {
+  if (rects.length === 0) {
+    return null
+  }
+
+  const left = Math.min(...rects.map((rect) => rect.left))
+  const top = Math.min(...rects.map((rect) => rect.top))
+  const right = Math.max(...rects.map((rect) => rect.left + rect.width))
+  const bottom = Math.max(...rects.map((rect) => rect.top + rect.height))
+
+  return {
+    left,
+    top,
+    width: right - left,
+    height: bottom - top
+  }
+}
+
+function areSelectionRectsEqual(left: SelectionRect[] | undefined, right: SelectionRect[]) {
+  if (!left || left.length !== right.length) {
+    return false
+  }
+
+  return left.every((rect, index) => {
+    const other = right[index]
+    return (
+      Math.abs(rect.left - other.left) < 0.5 &&
+      Math.abs(rect.top - other.top) < 0.5 &&
+      Math.abs(rect.width - other.width) < 0.5 &&
+      Math.abs(rect.height - other.height) < 0.5
+    )
+  })
+}
+
+function isSelectionRectEqual(left: SelectionRect, right: SelectionRect) {
+  return (
+    Math.abs(left.left - right.left) < 0.5 &&
+    Math.abs(left.top - right.top) < 0.5 &&
+    Math.abs(left.width - right.width) < 0.5 &&
+    Math.abs(left.height - right.height) < 0.5
+  )
 }
 
 export function SelectionManager({
@@ -164,6 +219,7 @@ export function SelectionManager({
   onSelectionChange,
   onClearFocus
 }: SelectionManagerProps) {
+  const popupPlacementMode = getSelectionActionPopupPlacementMode()
   const [uncontrolledPopupState, setUncontrolledPopupState] = useState<SelectionPopupState | null>(null)
   const [isSelecting, setIsSelecting] = useState(false)
   const [loupeState, setLoupeState] = useState<SelectionLoupeState | null>(null)
@@ -236,7 +292,12 @@ export function SelectionManager({
     }
 
     const selectionRect = getSelectionRect()
+    const selectionClientRects = getSelectionClientRects()
     if (!selectionRect) {
+      setLoupeState(null)
+      return
+    }
+    if (selectionClientRects.length === 0) {
       setLoupeState(null)
       return
     }
@@ -249,57 +310,103 @@ export function SelectionManager({
     }
 
     const rootRect = root.getBoundingClientRect()
-    const loupeWidth = Math.min(260, Math.max(160, selectionRect.width + 36))
+    const selectionLeft = Math.min(...selectionClientRects.map((rect) => rect.left))
+    const selectionTop = Math.min(...selectionClientRects.map((rect) => rect.top))
+    const selectionRight = Math.max(...selectionClientRects.map((rect) => rect.right))
+    const tallestSelectionLine = Math.max(...selectionClientRects.map((rect) => rect.height), selectionRect.height)
+    const loupeWidth = Math.min(Math.max(160, root.clientWidth - 24), Math.max(180, selectionRect.width + 52))
+    const loupeMaxWidth = Math.min(Math.max(220, root.clientWidth - 24), 360)
+    const loupeFontSize = Math.max(18, Math.min(30, tallestSelectionLine * 1.18))
+    const loupeHeightEstimate = loupeFontSize * 2.7 + 28
+    const loupeGap = 18
     const preferredLeft =
-      selectionRect.left - rootRect.left + root.scrollLeft + selectionRect.width / 2 - loupeWidth / 2
-    const preferredTop = selectionRect.top - rootRect.top + root.scrollTop - 84
+      selectionLeft - rootRect.left + root.scrollLeft + (selectionRight - selectionLeft) / 2 - loupeWidth / 2
+    const preferredAboveTop = selectionTop - rootRect.top + root.scrollTop - loupeHeightEstimate - loupeGap
 
     const minLeft = root.scrollLeft + 12
     const maxLeft = root.scrollLeft + Math.max(12, root.clientWidth - loupeWidth - 12)
     const minTop = root.scrollTop + 12
+    const maxTop = root.scrollTop + Math.max(12, root.clientHeight - loupeHeightEstimate - 12)
     setLoupeState({
       left: Math.max(minLeft, Math.min(preferredLeft, maxLeft)),
-      top: Math.max(minTop, preferredTop),
+      top: Math.max(minTop, Math.min(preferredAboveTop, maxTop)),
       text,
-      selectionColor: popupState?.selection.selectionColor ?? '#5d5df6'
+      selectionColor: popupState?.selection.selectionColor ?? '#5d5df6',
+      width: loupeWidth,
+      maxWidth: loupeMaxWidth,
+      fontSize: loupeFontSize
     })
   }, [popupState?.selection.selectionColor, rootRef])
 
   const recomputePopupPosition = useCallback(
-    (state: SelectionPopupState, nextPopupSize: { width: number; height: number }) => {
+    (
+      state: SelectionPopupState,
+      nextPopupSize: { width: number; height: number },
+      liveSelectionRects?: SelectionRect[]
+    ) => {
       const root = rootRef.current
       if (!root) {
         return null
       }
 
       const rootRect = root.getBoundingClientRect()
+      const sourceSelectionRects =
+        liveSelectionRects && liveSelectionRects.length > 0
+          ? liveSelectionRects
+          : state.selectionClientRects && state.selectionClientRects.length > 0
+            ? state.selectionClientRects
+            : [state.selectionBounds]
+      const selectionBounds = getSelectionUnionRect(sourceSelectionRects)
+      if (!selectionBounds) {
+        return null
+      }
       const selectionRectViewport = new DOMRect(
-        state.selectionBounds.left - root.scrollLeft + rootRect.left,
-        state.selectionBounds.top - root.scrollTop + rootRect.top,
-        state.selectionBounds.width,
-        state.selectionBounds.height
+        selectionBounds.left - root.scrollLeft + rootRect.left,
+        selectionBounds.top - root.scrollTop + rootRect.top,
+        selectionBounds.width,
+        selectionBounds.height
       )
+      const selectionClientRectsViewport =
+        sourceSelectionRects.map(
+          (rect) =>
+            new DOMRect(
+              rect.left - root.scrollLeft + rootRect.left,
+              rect.top - root.scrollTop + rootRect.top,
+              rect.width,
+              rect.height
+            )
+        )
 
       const safePopupWidth = Math.min(nextPopupSize.width, Math.max(120, rootRect.width - 24))
       const safePopupHeight = Math.min(nextPopupSize.height, Math.max(80, rootRect.height - 24))
       const popupPosition = clampPopupPosition({
         containerRect: rootRect,
         selectionRect: selectionRectViewport,
+        selectionRects: selectionClientRectsViewport,
         popupWidth: safePopupWidth,
         popupHeight: safePopupHeight,
-        gap: 14
+        gap: 14,
+        mode: popupPlacementMode
       })
 
       const nextLeft = popupPosition.left + root.scrollLeft
       const nextTop = popupPosition.top + root.scrollTop
+      const positionUnchanged = Math.abs(nextLeft - state.left) < 0.5 && Math.abs(nextTop - state.top) < 0.5
+      const boundsUnchanged = isSelectionRectEqual(state.selectionBounds, selectionBounds)
+      const rectsUnchanged = areSelectionRectsEqual(state.selectionClientRects, sourceSelectionRects)
 
-      if (Math.abs(nextLeft - state.left) < 0.5 && Math.abs(nextTop - state.top) < 0.5) {
+      if (positionUnchanged && boundsUnchanged && rectsUnchanged) {
         return null
       }
 
-      return { nextLeft, nextTop }
+      return {
+        nextLeft,
+        nextTop,
+        nextSelectionBounds: selectionBounds,
+        nextSelectionClientRects: sourceSelectionRects
+      }
     },
-    [rootRef]
+    [popupPlacementMode, rootRef]
   )
 
   const commitSelection = useCallback(() => {
@@ -309,8 +416,9 @@ export function SelectionManager({
     }
 
     const nextSelection = capturePdfSelection(root)
+    const selectionClientRects = getSelectionClientRects()
     const selectionRect = getSelectionRect()
-    if (!nextSelection || !selectionRect) {
+    if (!nextSelection || !selectionRect || selectionClientRects.length === 0) {
       return
     }
     if (nextSelection.text.trim().length === 0) {
@@ -322,9 +430,11 @@ export function SelectionManager({
     const popupPosition = clampPopupPosition({
       containerRect: rootRect,
       selectionRect,
+      selectionRects: selectionClientRects,
       popupWidth: Math.min(nextPopupSize.width, Math.max(120, rootRect.width - 24)),
       popupHeight: Math.min(nextPopupSize.height, Math.max(80, rootRect.height - 24)),
-      gap: 14
+      gap: 14,
+      mode: popupPlacementMode
     })
 
     const viewportRatio =
@@ -336,6 +446,12 @@ export function SelectionManager({
       width: selectionRect.width,
       height: selectionRect.height
     }
+    const selectionBoundsRects = selectionClientRects.map((rect) => ({
+      left: rect.left - rootRect.left + root.scrollLeft,
+      top: rect.top - rootRect.top + root.scrollTop,
+      width: rect.width,
+      height: rect.height
+    }))
 
     const anchorId = buildPageAnchor({
       ...nextSelection.anchor,
@@ -367,16 +483,30 @@ export function SelectionManager({
       top: popupPosition.top + root.scrollTop,
       viewportRatio,
       tags: popupState?.tags ?? [],
-      selectionBounds
+      selectionBounds,
+      selectionClientRects: selectionBoundsRects
     })
-  }, [documentId, popupSize, popupState?.selection.selectionColor, popupState?.tags, rootRef, setPopupState, workspaceId])
+  }, [documentId, popupPlacementMode, popupSize, popupState?.selection.selectionColor, popupState?.tags, rootRef, setPopupState, workspaceId])
+
+  const overlayRects = useMemo(() => {
+    const root = rootRef.current
+    if (!root || !popupState) {
+      return []
+    }
+
+    return buildSelectionRects(root, popupState.selection)
+  }, [popupState, rootRef])
+  const popupSelectionRects = useMemo(
+    () => (overlayRects.length > 0 ? overlayRects : popupState?.selectionClientRects ?? []),
+    [overlayRects, popupState?.selectionClientRects]
+  )
 
   useEffect(() => {
     if (!popupState || !popupSize) {
       return
     }
 
-    const next = recomputePopupPosition(popupState, popupSize)
+    const next = recomputePopupPosition(popupState, popupSize, popupSelectionRects)
     if (!next) {
       return
     }
@@ -386,11 +516,13 @@ export function SelectionManager({
         ? {
             ...current,
             left: next.nextLeft,
-            top: next.nextTop
+            top: next.nextTop,
+            selectionBounds: next.nextSelectionBounds,
+            selectionClientRects: next.nextSelectionClientRects
           }
         : current
     )
-  }, [popupSize, popupState, recomputePopupPosition, setPopupState])
+  }, [popupSelectionRects, popupSize, popupState, recomputePopupPosition, setPopupState])
 
   useEffect(() => {
     if (!popupState || !popupSize) {
@@ -398,7 +530,7 @@ export function SelectionManager({
     }
 
     const handleResize = () => {
-      const next = recomputePopupPosition(popupState, popupSize)
+      const next = recomputePopupPosition(popupState, popupSize, popupSelectionRects)
       if (!next) {
         return
       }
@@ -408,7 +540,9 @@ export function SelectionManager({
           ? {
               ...current,
               left: next.nextLeft,
-              top: next.nextTop
+              top: next.nextTop,
+              selectionBounds: next.nextSelectionBounds,
+              selectionClientRects: next.nextSelectionClientRects
             }
           : current
       )
@@ -416,7 +550,7 @@ export function SelectionManager({
 
     window.addEventListener('resize', handleResize)
     return () => window.removeEventListener('resize', handleResize)
-  }, [popupSize, popupState, recomputePopupPosition, setPopupState])
+  }, [popupSelectionRects, popupSize, popupState, recomputePopupPosition, setPopupState])
 
   useEffect(() => {
     const root = rootRef.current
@@ -478,9 +612,7 @@ export function SelectionManager({
         target?.closest('.selection-action-popup') ||
         target?.closest('.textLayer') ||
         target?.closest('.page-anchor-indicator') ||
-        target?.closest('.page-bookmark-indicator') ||
-        target?.closest('.page-bookmark-margin') ||
-        target?.closest('.page-anchor-margin-right') ||
+        target?.closest('.page-anchor-margin') ||
         target?.closest('.document-tag-badges') ||
         target?.closest('.document-highlight-button')
       ) {
@@ -517,7 +649,7 @@ export function SelectionManager({
       document.removeEventListener('pointerup', handlePointerUp)
       document.removeEventListener('pointerdown', handleDocumentPointerDown)
     }
-  }, [clearSelection, commitSelection, dismiss, rootRef, updateLoupe])
+  }, [clearSelection, commitSelection, dismiss, rootRef, setPopupState, updateLoupe])
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -564,6 +696,8 @@ export function SelectionManager({
         }}
         onBookmark={() => {
           onBookmark(popupState.selection)
+          setPopupState(null)
+          clearSelection()
         }}
         onTag={(tags) => {
           const nextSelection = { ...popupState.selection, tags }
@@ -614,15 +748,6 @@ export function SelectionManager({
     )
   }, [bookmarkedSet, clearSelection, linkedSet, isSelecting, onAutoExcerpt, onBookmark, onComment, onRemoveExcerpt, onRemoveHighlight, onSelectionChange, onTag, popupState, setPopupState])
 
-  const overlayRects = useMemo(() => {
-    const root = rootRef.current
-    if (!root || !popupState) {
-      return []
-    }
-
-    return buildSelectionRects(root, popupState.selection)
-  }, [popupState, rootRef])
-
   return (
     <>
       {loupeState ? (
@@ -631,9 +756,12 @@ export function SelectionManager({
           style={{
             left: loupeState.left,
             top: loupeState.top,
+            '--selection-loupe-width': `${loupeState.width}px`,
+            '--selection-loupe-max-width': `${loupeState.maxWidth}px`,
+            '--selection-loupe-font-size': `${loupeState.fontSize}px`,
             borderColor: `${loupeState.selectionColor}66`,
             boxShadow: `0 16px 28px ${loupeState.selectionColor}24`
-          }}
+          } as CSSProperties}
         >
           <div
             className="document-selection-loupe-copy"
