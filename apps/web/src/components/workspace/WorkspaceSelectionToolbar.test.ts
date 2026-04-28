@@ -17,6 +17,7 @@ import { buildSourceHighlightDescriptors } from '../../lib/workspace/source-high
 import {
   buildReportSections,
   drawSourceAnnotations,
+  formatTags,
   getAnnotationRects,
   getAnnotationUnionRect,
   mergeExcerptNodeText,
@@ -54,6 +55,9 @@ assert.equal(shouldPreserveWorkspaceFocusForPointerTarget(makeTarget(['.workspac
 assert.equal(shouldPreserveWorkspaceFocusForPointerTarget(makeTarget(['.workspace-textbox-editor'])), true)
 assert.equal(shouldPreserveWorkspaceFocusForPointerTarget(makeTarget(['.workspace-pane'])), true)
 assert.equal(shouldPreserveWorkspaceFocusForPointerTarget(null), false)
+assert.equal(formatTags(['risk', 'dataset']), 'Tags: #risk #dataset')
+assert.equal(formatTags(['risk', 'risk', '  dataset  ', '']), 'Tags: #risk #dataset')
+assert.equal(formatTags([]), '')
 
 const popupContainerRect = makeRect(0, 0, 900, 700)
 const popupSize = { width: 320, height: 180 }
@@ -322,6 +326,7 @@ const multiRectAnnotation: ExportAnnotation = {
   pageNumber: 1,
   text: 'Final Report-format Internship 8th Sem Aryabrat Mishra',
   color: '#ff6b6b',
+  tags: ['report', 'internship'],
   boundingBox: { x: 10, y: 20, width: 160, height: 58 },
   quadPoints: [
     10, 20, 110, 20, 110, 38, 10, 38,
@@ -438,13 +443,22 @@ const typedSections = buildReportSections(
         ...multiRectAnnotation,
         id: 'comment-anchor',
         kind: 'comment',
-        text: 'Patient Clinical Report'
+        text: 'Patient Clinical Report',
+        tags: ['review']
       },
       {
         ...multiRectAnnotation,
         id: 'bookmark-anchor',
         kind: 'bookmark',
-        text: 'Datasets Available'
+        text: 'Datasets Available',
+        tags: ['dataset']
+      },
+      {
+        ...multiRectAnnotation,
+        id: 'tag-anchor',
+        kind: 'text',
+        text: 'Overall Similarity',
+        tags: ['evidence']
       }
     ],
     nodes: [
@@ -452,7 +466,8 @@ const typedSections = buildReportSections(
         id: 'comment-node',
         kind: 'comment',
         text: 'Review this title',
-        sourceAnchorId: 'comment-anchor'
+        sourceAnchorId: 'comment-anchor',
+        tags: ['question']
       }
     ],
     links: []
@@ -462,14 +477,22 @@ const typedSections = buildReportSections(
 const excerptSection = typedSections.find((section) => section.id === 'anchor-export-1')
 const commentSection = typedSections.find((section) => section.id === 'comment-anchor')
 const bookmarkSection = typedSections.find((section) => section.id === 'bookmark-anchor')
+const tagSection = typedSections.find((section) => section.id === 'tag-anchor')
 assert.equal(excerptSection?.kind, 'excerpt')
 assert.equal(excerptSection?.excerpt, 'Final Report-format Internship 8th Sem Aryabrat Mishra')
+assert.deepEqual(excerptSection?.tags, ['report', 'internship'])
 assert.equal(commentSection?.kind, 'comment')
 assert.equal(commentSection?.excerpt, undefined)
 assert.equal(commentSection?.comments[0]?.text, 'Review this title')
+assert.deepEqual(commentSection?.tags, ['review', 'question'])
 assert.equal(bookmarkSection?.kind, 'bookmark')
 assert.equal(bookmarkSection?.excerpt, undefined)
 assert.equal(bookmarkSection?.bookmarkLabel, 'Datasets Available')
+assert.deepEqual(bookmarkSection?.tags, ['dataset'])
+assert.equal(tagSection?.kind, 'text')
+assert.equal(tagSection?.excerpt, undefined)
+assert.equal(tagSection?.taggedText, 'Overall Similarity')
+assert.deepEqual(tagSection?.tags, ['evidence'])
 
 assert.equal(
   mergeExcerptNodeText([

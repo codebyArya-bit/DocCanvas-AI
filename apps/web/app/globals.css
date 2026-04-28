@@ -333,18 +333,10 @@ button, input, textarea {
 }
 
 .export-preview-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
   margin-top: 10px;
-}
-
-.export-preview-tags span {
-  border-radius: 999px;
-  padding: 4px 8px;
-  background: #edf2f8;
   color: #33445d;
   font-size: 12px;
+  line-height: 1.45;
 }
 
 .export-preview-source {
@@ -403,6 +395,25 @@ button, input, textarea {
   background: var(--section-color);
   box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.82);
   flex: 0 0 auto;
+}
+
+.export-report-tagged-text {
+  margin-top: 8px;
+  color: var(--text);
+}
+
+.export-report-tagged-text strong {
+  display: block;
+  margin-bottom: 3px;
+  color: #33445d;
+  font-size: 11px;
+}
+
+.export-report-tagged-text p {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.45;
 }
 
 .export-report-comments {

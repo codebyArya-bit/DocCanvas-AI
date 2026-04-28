@@ -74,6 +74,7 @@ interface ReportSection {
   color: string
   excerpt?: string
   bookmarkLabel?: string
+  taggedText?: string
   comments: ExportNode[]
   tags: string[]
   sourceAnchorId?: string
@@ -197,6 +198,11 @@ function titleFromTags(tags: string[], fallback: string) {
     .join(' / ')
 }
 
+export function formatTags(tags: string[]) {
+  const normalized = Array.from(new Set(tags.map((tag) => tag.trim()).filter(Boolean)))
+  return normalized.length ? `Tags: ${normalized.map((tag) => `#${tag}`).join(' ')}` : ''
+}
+
 function normalizeExportText(text: string) {
   return text.replace(/\s+/g, ' ').trim()
 }
@@ -311,6 +317,8 @@ export function buildReportSections(data: ExportData, options: ExportOptions): R
       comments.forEach((node) => usedNodeIds.add(node.id))
 
       const tags = uniqueTags(annotation.tags, primaryExcerpt?.tags, ...comments.map((comment) => comment.tags))
+      const taggedText =
+        annotation.kind === 'text' && tags.length > 0 ? normalizeExportText(annotation.text) : ''
       const sectionNodeIds = new Set([...excerptNodes.map((node) => node.id), ...comments.map((node) => node.id)])
       const connectionCount = data.links.filter((link) => sectionNodeIds.has(link.fromNodeId) || sectionNodeIds.has(link.toNodeId)).length
 
@@ -329,6 +337,7 @@ export function buildReportSections(data: ExportData, options: ExportOptions): R
         color: annotation.color,
         ...(annotation.kind === 'excerpt' ? { excerpt: mergedExcerpt || normalizeExportText(annotation.text) } : {}),
         ...(annotation.kind === 'bookmark' ? { bookmarkLabel: normalizeExportText(annotation.text) || 'Bookmarked source' } : {}),
+        ...(taggedText ? { taggedText } : {}),
         comments,
         tags,
         sourceAnchorId: annotation.id,
@@ -376,9 +385,8 @@ function renderReportSectionsHtml(data: ExportData, options: ExportOptions) {
   const sections = buildReportSections(data, options)
   return sections
     .map((section, index) => {
-      const tags = section.tags.length
-        ? `<div class="tags">${section.tags.map((tag) => `<span>#${escapeHtml(tag)}</span>`).join('')}</div>`
-        : ''
+      const tagText = formatTags(section.tags)
+      const tags = tagText ? `<div class="tags">${escapeHtml(tagText)}</div>` : ''
       const citation = options.inlineCitations && section.pageNumber ? ` <sup>Page ${section.pageNumber}</sup>` : ''
       const source = options.fullCommentSources && section.sourceAnchorId ? `<div class="source">Source: ${escapeHtml(section.sourceAnchorId)}</div>` : ''
       const excerpt = section.excerpt
@@ -386,6 +394,9 @@ function renderReportSectionsHtml(data: ExportData, options: ExportOptions) {
         : ''
       const bookmark = section.bookmarkLabel
         ? `<div class="report-bookmark"><span aria-hidden="true"></span>${escapeHtml(section.bookmarkLabel)}</div>`
+        : ''
+      const taggedText = section.taggedText
+        ? `<div class="report-tagged-text"><strong>Tagged text</strong><p>${escapeHtml(section.taggedText)}</p></div>`
         : ''
       const comments = section.comments.length
         ? `<div class="report-comments">${section.comments
@@ -398,6 +409,7 @@ function renderReportSectionsHtml(data: ExportData, options: ExportOptions) {
   <h2>${index + 1}. ${escapeHtml(section.title)}${citation}</h2>
   ${excerpt}
   ${bookmark}
+  ${taggedText}
   ${comments}
   ${tags}
   ${connections}
@@ -425,14 +437,15 @@ function wrapExportHtml(title: string, content: string, options: ExportOptions) 
     .report-section blockquote{margin:0;border:1px solid color-mix(in srgb,var(--section-color) 55%,#ddd);background:color-mix(in srgb,var(--section-color) 13%,white);padding:10px 12px;line-height:1.45}
     .report-bookmark{display:flex;align-items:center;gap:8px;margin-top:8px;color:#33445d;font-size:13px;line-height:1.4}
     .report-bookmark span{width:9px;height:9px;border-radius:999px;background:var(--section-color);box-shadow:0 0 0 2px #fff}
+    .report-tagged-text{margin-top:8px;color:#1f1b16}
+    .report-tagged-text strong{display:block;margin-bottom:3px;color:#33445d;font-size:12px}
     .report-comments{display:grid;gap:8px;margin-top:10px}
     .report-comment{border:1px solid #b8dbb6;background:#f2fff0;padding:8px 10px}
     .report-comment strong{display:block;color:#1f7a24;font-size:12px;margin-bottom:3px}
     .kind{text-transform:uppercase;letter-spacing:.08em;font-size:11px;color:#5f5548}
     h2{font-size:16px;margin:4px 0 8px}
     p{margin:0;line-height:1.55}
-    .tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
-    .tags span{font-size:12px;border-radius:999px;background:#edf2f8;color:#33445d;padding:4px 8px}
+    .tags{margin-top:10px;color:#33445d;font-size:12px;line-height:1.45}
     .source{font-size:12px;color:#5f5548;margin-top:10px}
     #export-root{display:grid;gap:18px;margin-top:18px}
     .combined-source-pages{display:grid;gap:18px}
@@ -721,6 +734,22 @@ async function addReportPagesToPdf(
       y += bookmarkHeight + 8
     }
 
+    if (section.taggedText) {
+      pdf.setFont('helvetica', 'bold')
+      pdf.setFontSize(9)
+      pdf.setTextColor(51, 68, 93)
+      pdf.text('Tagged text', margin, y)
+      y += 10
+
+      const taggedLines = pdf.splitTextToSize(section.taggedText, contentWidth)
+      addPageIfNeeded(taggedLines.length * 12 + 8)
+      pdf.setFont('helvetica', 'normal')
+      pdf.setFontSize(10)
+      pdf.setTextColor(31, 27, 22)
+      pdf.text(taggedLines, margin, y)
+      y += taggedLines.length * 12 + 8
+    }
+
     for (const comment of section.comments) {
       const commentText = comment.text || 'Untitled comment'
       const commentLines = pdf.splitTextToSize(commentText, contentWidth - 18)
@@ -740,15 +769,21 @@ async function addReportPagesToPdf(
       y += commentHeight + 8
     }
 
-    if (section.tags.length || section.connectionCount) {
-      const metaParts = [
-        ...section.tags.map((tag) => `#${tag}`),
-        section.connectionCount ? `${section.connectionCount} related connection${section.connectionCount === 1 ? '' : 's'}` : ''
-      ].filter(Boolean)
+    const tagText = formatTags(section.tags)
+    if (tagText) {
+      pdf.setFont('helvetica', 'normal')
+      pdf.setFontSize(9)
+      pdf.setTextColor(51, 68, 93)
+      y = writeWrappedText(pdf, tagText, margin, y, contentWidth, 11)
+      y += 8
+    }
+
+    if (section.connectionCount) {
+      const connectionText = `${section.connectionCount} related connection${section.connectionCount === 1 ? '' : 's'}`
       pdf.setFont('helvetica', 'normal')
       pdf.setFontSize(9)
       pdf.setTextColor(95, 85, 72)
-      y = writeWrappedText(pdf, metaParts.join('  '), margin, y, contentWidth, 11)
+      y = writeWrappedText(pdf, connectionText, margin, y, contentWidth, 11)
       y += 8
     }
 
@@ -1190,6 +1225,12 @@ export function ExportModal({ open, data, onClose, onCopyHtml }: ExportModalProp
                               {section.bookmarkLabel}
                             </div>
                           ) : null}
+                          {section.taggedText ? (
+                            <div className="export-report-tagged-text">
+                              <strong>Tagged text</strong>
+                              <p>{section.taggedText}</p>
+                            </div>
+                          ) : null}
                           {section.comments.length ? (
                             <div className="export-report-comments">
                               {section.comments.map((comment) => (
@@ -1201,11 +1242,7 @@ export function ExportModal({ open, data, onClose, onCopyHtml }: ExportModalProp
                             </div>
                           ) : null}
                           {section.tags.length ? (
-                            <div className="export-preview-tags">
-                              {section.tags.map((tag) => (
-                                <span key={tag}>#{tag}</span>
-                              ))}
-                            </div>
+                            <div className="export-preview-tags">{formatTags(section.tags)}</div>
                           ) : null}
                           {section.connectionCount ? (
                             <small className="export-preview-source">
@@ -1242,6 +1279,12 @@ export function ExportModal({ open, data, onClose, onCopyHtml }: ExportModalProp
                           {section.bookmarkLabel}
                         </div>
                       ) : null}
+                      {section.taggedText ? (
+                        <div className="export-report-tagged-text">
+                          <strong>Tagged text</strong>
+                          <p>{section.taggedText}</p>
+                        </div>
+                      ) : null}
                       {section.comments.length ? (
                         <div className="export-report-comments">
                           {section.comments.map((comment) => (
@@ -1253,11 +1296,7 @@ export function ExportModal({ open, data, onClose, onCopyHtml }: ExportModalProp
                         </div>
                       ) : null}
                       {section.tags.length ? (
-                        <div className="export-preview-tags">
-                          {section.tags.map((tag) => (
-                            <span key={tag}>#{tag}</span>
-                          ))}
-                        </div>
+                        <div className="export-preview-tags">{formatTags(section.tags)}</div>
                       ) : null}
                       {section.connectionCount ? (
                         <small className="export-preview-source">
