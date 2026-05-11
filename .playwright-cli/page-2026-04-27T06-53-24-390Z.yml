@@ -1,0 +1,130 @@
+- generic [ref=e1]:
+  - main [ref=e2]:
+    - generic [ref=e3]:
+      - generic [ref=e4]:
+        - generic [ref=e5]: Document Intelligence Workspace
+        - strong [ref=e6]: Selection → action popup → workspace node → linked navigation
+      - generic [ref=e7]:
+        - generic "Whole page zoom controls" [ref=e8]:
+          - button "Zoom out whole page" [ref=e9] [cursor=pointer]: "-"
+          - button "Reset whole page zoom" [ref=e10] [cursor=pointer]: 100%
+          - button "Zoom in whole page" [ref=e11] [cursor=pointer]: +
+        - button "Notes" [ref=e12] [cursor=pointer]
+        - button "Export" [active] [ref=e13] [cursor=pointer]
+        - generic [ref=e14]: PDF.js • draggable workspace • SVG link layer
+    - generic [ref=e16]:
+      - generic [ref=e17]:
+        - generic [ref=e18]: Source Document
+        - generic [ref=e19]:
+          - button "Import PDF" [ref=e20] [cursor=pointer]
+          - generic [ref=e39]: textbox-toolbar-fixture.pdf
+          - generic "Page zoom controls" [ref=e40]:
+            - button "Zoom out page" [ref=e41] [cursor=pointer]: "-"
+            - button "Reset page zoom" [ref=e42] [cursor=pointer]: Page 100%
+            - button "Zoom in page" [ref=e43] [cursor=pointer]: +
+      - generic [ref=e21]:
+        - complementary [ref=e44]:
+          - generic [ref=e45]:
+            - generic [ref=e46]: Excerpts
+            - generic [ref=e47]: No excerpts yet.
+          - generic [ref=e48]:
+            - generic [ref=e49]: Bookmarks
+            - generic [ref=e50]: No bookmarks yet.
+          - generic [ref=e51]:
+            - generic [ref=e52]: Tags
+            - generic [ref=e53]:
+              - button "#counterpoint" [ref=e54] [cursor=pointer]
+              - button "#defined-term" [ref=e55] [cursor=pointer]
+              - button "#evidence" [ref=e56] [cursor=pointer]
+              - button "#follow-up" [ref=e57] [cursor=pointer]
+              - button "#important" [ref=e58] [cursor=pointer]
+              - button "#question" [ref=e59] [cursor=pointer]
+              - button "Clear Filter" [disabled] [ref=e60]
+        - generic [ref=e63]: Textbox toolbar fixture document This PDF is used to verify workspace textbox toolbar behavior while a document is loaded. Selecting text in the source document should not break textbox toolbar interactions.
+    - generic [ref=e28]:
+      - generic:
+        - generic: Workspace
+        - generic "Workspace zoom controls" [ref=e29]:
+          - button "Zoom out workspace" [ref=e30] [cursor=pointer]: −
+          - button "Zoom in workspace" [ref=e31] [cursor=pointer]: +
+      - generic "Workspace tools" [ref=e34]:
+        - button "Draw Textbox in Workspace" [ref=e35] [cursor=pointer]:
+          - generic [ref=e36]: AB+
+        - button "Add Workspace Card" [ref=e37] [cursor=pointer]:
+          - generic [ref=e38]: +
+    - dialog "Export workspace" [ref=e74]:
+      - generic [ref=e75]:
+        - generic [ref=e76]:
+          - strong [ref=e77]: Export Your Notes
+          - button "Close export" [ref=e78] [cursor=pointer]: x
+        - generic [ref=e79]:
+          - complementary [ref=e80]:
+            - tablist "Export mode" [ref=e81]:
+              - button "Notes Export" [ref=e82] [cursor=pointer]
+              - button "Combined PDF" [ref=e83] [cursor=pointer]
+            - generic [ref=e84]:
+              - heading "Export Output" [level=3] [ref=e85]
+              - generic [ref=e86]:
+                - generic [ref=e87]: Format
+                - combobox "Format" [ref=e88]:
+                  - option "PDF" [selected]
+                  - option "HTML"
+                  - option "Word"
+                  - option "Excel"
+                  - option "PowerPoint"
+              - generic [ref=e89]:
+                - generic [ref=e90]: Orientation
+                - combobox "Orientation" [ref=e91]:
+                  - option "Portrait" [selected]
+                  - option "Landscape"
+              - generic [ref=e92]:
+                - generic [ref=e93]: Page size
+                - combobox "Page size" [ref=e94]:
+                  - option "A4" [selected]
+                  - option "Letter"
+                  - option "Legal"
+            - generic [ref=e95]:
+              - heading "General Options" [level=3] [ref=e96]
+              - button "Inline Citations Add source anchor refs inline." [ref=e97] [cursor=pointer]:
+                - generic [ref=e98]:
+                  - strong [ref=e99]: Inline Citations
+                  - generic [ref=e100]: Add source anchor refs inline.
+              - button "Full Comment Sources Append source references below blocks." [ref=e102] [cursor=pointer]:
+                - generic [ref=e103]:
+                  - strong [ref=e104]: Full Comment Sources
+                  - generic [ref=e105]: Append source references below blocks.
+            - generic [ref=e107]:
+              - heading "Document Notes" [level=3] [ref=e108]
+              - button "Highlights Show excerpt highlight styling." [ref=e109] [cursor=pointer]:
+                - generic [ref=e110]:
+                  - strong [ref=e111]: Highlights
+                  - generic [ref=e112]: Show excerpt highlight styling.
+              - button "Margin Comments Include document-side annotations." [ref=e114] [cursor=pointer]:
+                - generic [ref=e115]:
+                  - strong [ref=e116]: Margin Comments
+                  - generic [ref=e117]: Include document-side annotations.
+            - generic [ref=e119]:
+              - heading "Workspace Notes" [level=3] [ref=e120]
+              - button "Comments Add each workspace comment." [ref=e121] [cursor=pointer]:
+                - generic [ref=e122]:
+                  - strong [ref=e123]: Comments
+                  - generic [ref=e124]: Add each workspace comment.
+              - button "Excerpts Add each workspace excerpt." [ref=e126] [cursor=pointer]:
+                - generic [ref=e127]:
+                  - strong [ref=e128]: Excerpts
+                  - generic [ref=e129]: Add each workspace excerpt.
+          - generic [ref=e131]:
+            - generic [ref=e132]: Combined PDF preview exports source pages first, then My Research Notes.
+            - generic [ref=e134]:
+              - generic [ref=e136]:
+                - generic [ref=e137]: Source Page 1
+                - generic "Source PDF page 1" [ref=e139]
+              - generic [ref=e140]:
+                - heading "My Research Notes" [level=2] [ref=e141]
+                - paragraph [ref=e142]: No workspace content selected for export.
+        - generic [ref=e143]:
+          - button "Copy to Clipboard" [ref=e144] [cursor=pointer]
+          - button "Export PDF" [ref=e145] [cursor=pointer]
+  - button "Open Next.js Dev Tools" [ref=e69] [cursor=pointer]:
+    - img [ref=e70]
+  - alert [ref=e73]

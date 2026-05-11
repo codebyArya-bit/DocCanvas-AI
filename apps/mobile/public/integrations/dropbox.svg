@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Dropbox">
+  <path fill="#0061ff" d="M18 8 4 17l14 9 14-9zM46 8 32 17l14 9 14-9zM18 28 4 37l14 9 14-9zM46 28 32 37l14 9 14-9z"/>
+  <path fill="#0061ff" d="m18 49 14-9 14 9-14 8z" opacity=".8"/>
+</svg>

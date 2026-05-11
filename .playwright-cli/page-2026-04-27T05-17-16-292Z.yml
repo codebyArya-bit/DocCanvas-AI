@@ -1,0 +1,81 @@
+- generic [ref=e1]:
+  - main [ref=e2]:
+    - generic [ref=e3]:
+      - generic [ref=e4]:
+        - generic [ref=e5]: Document Intelligence Workspace
+        - strong [ref=e6]: Selection → action popup → workspace node → linked navigation
+      - generic [ref=e7]:
+        - generic "Whole page zoom controls" [ref=e8]:
+          - button "Zoom out whole page" [ref=e9] [cursor=pointer]: "-"
+          - button "Reset whole page zoom" [ref=e10] [cursor=pointer]: 100%
+          - button "Zoom in whole page" [ref=e11] [cursor=pointer]: +
+        - button "Notes" [ref=e12] [cursor=pointer]
+        - button "Export" [active] [ref=e13] [cursor=pointer]
+        - generic [ref=e14]: PDF.js • draggable workspace • SVG link layer
+    - generic [ref=e16]:
+      - generic [ref=e17]:
+        - generic [ref=e18]: Source Document
+        - button "Import PDF" [ref=e20] [cursor=pointer]
+      - generic [ref=e22]:
+        - generic [ref=e23]: Drop a PDF here
+        - paragraph [ref=e24]: Import a local PDF to enable real selection, action popup, workspace nodes, and bidirectional links.
+        - button "Choose PDF" [ref=e25] [cursor=pointer]
+    - generic [ref=e28]:
+      - generic:
+        - generic: Workspace
+        - generic "Workspace zoom controls" [ref=e29]:
+          - button "Zoom out workspace" [ref=e30] [cursor=pointer]: −
+          - button "Zoom in workspace" [ref=e31] [cursor=pointer]: +
+      - generic "Workspace tools" [ref=e34]:
+        - button "Draw Textbox in Workspace" [ref=e35] [cursor=pointer]:
+          - generic [ref=e36]: AB+
+        - button "Add Workspace Card" [ref=e37] [cursor=pointer]:
+          - generic [ref=e38]: +
+    - dialog "Export workspace" [ref=e49]:
+      - generic [ref=e50]:
+        - generic [ref=e51]:
+          - strong [ref=e52]: Export Your Notes
+          - button "Close export" [ref=e53] [cursor=pointer]: ×
+        - generic [ref=e54]:
+          - complementary [ref=e55]:
+            - generic [ref=e56]:
+              - heading "General Options" [level=3] [ref=e57]
+              - button "Inline Citations Add source anchor refs inline." [ref=e58] [cursor=pointer]:
+                - generic [ref=e59]:
+                  - strong [ref=e60]: Inline Citations
+                  - generic [ref=e61]: Add source anchor refs inline.
+              - button "Full Comment Sources Append source references below blocks." [ref=e63] [cursor=pointer]:
+                - generic [ref=e64]:
+                  - strong [ref=e65]: Full Comment Sources
+                  - generic [ref=e66]: Append source references below blocks.
+            - generic [ref=e68]:
+              - heading "Document Notes" [level=3] [ref=e69]
+              - button "Highlights Show excerpt highlight styling." [ref=e70] [cursor=pointer]:
+                - generic [ref=e71]:
+                  - strong [ref=e72]: Highlights
+                  - generic [ref=e73]: Show excerpt highlight styling.
+              - button "Margin Comments Include document-side annotations." [ref=e75] [cursor=pointer]:
+                - generic [ref=e76]:
+                  - strong [ref=e77]: Margin Comments
+                  - generic [ref=e78]: Include document-side annotations.
+            - generic [ref=e80]:
+              - heading "Workspace Notes" [level=3] [ref=e81]
+              - button "Comments Add each workspace comment." [ref=e82] [cursor=pointer]:
+                - generic [ref=e83]:
+                  - strong [ref=e84]: Comments
+                  - generic [ref=e85]: Add each workspace comment.
+              - button "Excerpts Add each workspace excerpt." [ref=e87] [cursor=pointer]:
+                - generic [ref=e88]:
+                  - strong [ref=e89]: Excerpts
+                  - generic [ref=e90]: Add each workspace excerpt.
+          - generic [ref=e92]:
+            - generic [ref=e93]: Preview updates from workspace data without changing the canvas.
+            - generic [ref=e94]:
+              - heading "Workspace Export" [level=2] [ref=e95]
+              - paragraph [ref=e96]: No workspace content selected for export.
+        - generic [ref=e97]:
+          - button "Copy to Clipboard" [ref=e98] [cursor=pointer]
+          - button "Export HTML" [ref=e99] [cursor=pointer]
+  - button "Open Next.js Dev Tools" [ref=e44] [cursor=pointer]:
+    - img [ref=e45]
+  - alert [ref=e48]

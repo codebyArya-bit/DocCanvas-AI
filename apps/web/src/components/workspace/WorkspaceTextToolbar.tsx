@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useMemo, useState, type PointerEvent as ReactPointerEvent, type MouseEvent as ReactMouseEvent } from 'react'
 import type { CanvasNode, TextStyle } from '@workspace/domain'
 
 interface WorkspaceTextToolbarProps {
@@ -56,6 +56,10 @@ export function WorkspaceTextToolbar({
 
   const bindAction = (handler: () => void) => ({
     onPointerDown: (event: ReactPointerEvent<HTMLElement>) => {
+      event.preventDefault()
+      event.stopPropagation()
+    },
+    onClick: (event: React.MouseEvent<HTMLElement>) => {
       event.preventDefault()
       event.stopPropagation()
       handler()
@@ -159,6 +163,10 @@ export function WorkspaceTextToolbar({
             type="button"
             className={`workspace-text-toolbar-icon${toolsOpen ? ' is-active' : ''}`}
             onPointerDown={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+            }}
+            onClick={(event) => {
               event.preventDefault()
               event.stopPropagation()
               setToolsOpen((current) => !current)

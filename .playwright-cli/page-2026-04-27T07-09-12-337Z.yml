@@ -1,0 +1,32 @@
+- main [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e4]:
+      - generic [ref=e5]: Document Intelligence Workspace
+      - strong [ref=e6]: Selection → action popup → workspace node → linked navigation
+    - generic [ref=e7]:
+      - generic "Whole page zoom controls" [ref=e8]:
+        - button "Zoom out whole page" [ref=e9] [cursor=pointer]: "-"
+        - button "Reset whole page zoom" [ref=e10] [cursor=pointer]: 100%
+        - button "Zoom in whole page" [ref=e11] [cursor=pointer]: +
+      - button "Notes" [ref=e12] [cursor=pointer]
+      - button "Export" [ref=e13] [cursor=pointer]
+      - generic [ref=e14]: PDF.js • draggable workspace • SVG link layer
+  - generic [ref=e16]:
+    - generic [ref=e17]:
+      - generic [ref=e18]: Source Document
+      - button "Import PDF" [ref=e20] [cursor=pointer]
+    - generic [ref=e22]:
+      - generic [ref=e23]: Drop a PDF here
+      - paragraph [ref=e24]: Import a local PDF to enable real selection, action popup, workspace nodes, and bidirectional links.
+      - button "Choose PDF" [ref=e25] [cursor=pointer]
+  - generic [ref=e28]:
+    - generic:
+      - generic: Workspace
+      - generic "Workspace zoom controls" [ref=e29]:
+        - button "Zoom out workspace" [ref=e30] [cursor=pointer]: −
+        - button "Zoom in workspace" [ref=e31] [cursor=pointer]: +
+    - generic "Workspace tools" [ref=e34]:
+      - button "Draw Textbox in Workspace" [ref=e35] [cursor=pointer]:
+        - generic [ref=e36]: AB+
+      - button "Add Workspace Card" [ref=e37] [cursor=pointer]:
+        - generic [ref=e38]: +

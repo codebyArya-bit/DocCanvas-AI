@@ -1,0 +1,34 @@
+{
+  "name": "@workspace/mobile",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "next dev --turbopack",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx app/api/browser/_lib.test.ts && tsx src/lib/interaction-engine.test.ts && tsx src/components/WebpageImportPanel.test.ts && tsx src/components/MobileWorkspaceCanvas.test.ts && tsx src/components/pdf/DocumentViewer.test.ts && tsx src/components/pdf/SelectionManager.test.ts && tsx src/components/workspace/WorkspaceSelectionToolbar.test.ts"
+  },
+  "dependencies": {
+    "@mozilla/readability": "^0.6.0",
+    "@workspace/domain": "file:../../packages/domain",
+    "dompurify": "^3.4.1",
+    "jsdom": "^29.1.0",
+    "next": "^15.0.0",
+    "pdfjs-dist": "^5.4.0",
+    "playwright": "^1.59.1",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "turndown": "^7.2.4"
+  },
+  "devDependencies": {
+    "@types/jsdom": "^28.0.1",
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.0.2",
+    "@types/react-dom": "^19.0.2",
+    "@types/turndown": "^5.0.6",
+    "typescript": "^5.7.2"
+  }
+}

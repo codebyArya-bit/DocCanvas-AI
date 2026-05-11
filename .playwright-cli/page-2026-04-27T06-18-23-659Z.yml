@@ -1,0 +1,109 @@
+- generic [ref=e1]:
+  - main [ref=e2]:
+    - generic [ref=e3]:
+      - generic [ref=e4]:
+        - generic [ref=e5]: Document Intelligence Workspace
+        - strong [ref=e6]: Selection → action popup → workspace node → linked navigation
+      - generic [ref=e7]:
+        - generic "Whole page zoom controls" [ref=e8]:
+          - button "Zoom out whole page" [ref=e9] [cursor=pointer]: "-"
+          - button "Reset whole page zoom" [ref=e10] [cursor=pointer]: 100%
+          - button "Zoom in whole page" [ref=e11] [cursor=pointer]: +
+        - button "Notes" [ref=e12] [cursor=pointer]
+        - button "Export" [ref=e13] [cursor=pointer]
+        - generic [ref=e14]: PDF.js • draggable workspace • SVG link layer
+    - generic [ref=e16]:
+      - generic [ref=e17]:
+        - generic [ref=e18]: Source Document
+        - button "Import PDF" [ref=e20] [cursor=pointer]
+      - generic [ref=e22]:
+        - generic [ref=e23]: Drop a PDF here
+        - paragraph [ref=e24]: Import a local PDF to enable real selection, action popup, workspace nodes, and bidirectional links.
+        - button "Choose PDF" [ref=e25] [cursor=pointer]
+    - generic [ref=e28]:
+      - generic:
+        - generic: Workspace
+        - generic "Workspace zoom controls" [ref=e29]:
+          - button "Zoom out workspace" [ref=e30] [cursor=pointer]: −
+          - button "Zoom in workspace" [ref=e31] [cursor=pointer]: +
+      - generic "Workspace tools" [ref=e34]:
+        - button "Draw Textbox in Workspace" [ref=e35] [cursor=pointer]:
+          - generic [ref=e36]: AB+
+        - button "Add Workspace Card" [ref=e37] [cursor=pointer]:
+          - generic [ref=e38]: +
+    - dialog "Export workspace" [ref=e49]:
+      - generic [ref=e50]:
+        - generic [ref=e51]:
+          - strong [ref=e52]: Export Your Notes
+          - button "Close export" [ref=e53] [cursor=pointer]: x
+        - generic [ref=e54]:
+          - complementary [ref=e55]:
+            - tablist "Export mode" [ref=e56]:
+              - button "Notes Export" [ref=e57] [cursor=pointer]
+              - button "Document Export" [active] [ref=e58] [cursor=pointer]
+            - generic [ref=e59]:
+              - heading "Export Output" [level=3] [ref=e60]
+              - generic [ref=e61]:
+                - generic [ref=e62]: Format
+                - combobox "Format" [ref=e63]:
+                  - option "PDF" [selected]
+                  - option "HTML"
+                  - option "Word"
+                  - option "Excel"
+                  - option "PowerPoint"
+              - generic [ref=e64]:
+                - generic [ref=e65]: Orientation
+                - combobox "Orientation" [ref=e66]:
+                  - option "Portrait" [selected]
+                  - option "Landscape"
+              - generic [ref=e67]:
+                - generic [ref=e68]: Page size
+                - combobox "Page size" [ref=e69]:
+                  - option "A4" [selected]
+                  - option "Letter"
+                  - option "Legal"
+            - generic [ref=e70]:
+              - heading "General Options" [level=3] [ref=e71]
+              - button "Inline Citations Add source anchor refs inline." [ref=e72] [cursor=pointer]:
+                - generic [ref=e73]:
+                  - strong [ref=e74]: Inline Citations
+                  - generic [ref=e75]: Add source anchor refs inline.
+              - button "Full Comment Sources Append source references below blocks." [ref=e77] [cursor=pointer]:
+                - generic [ref=e78]:
+                  - strong [ref=e79]: Full Comment Sources
+                  - generic [ref=e80]: Append source references below blocks.
+            - generic [ref=e82]:
+              - heading "Document Notes" [level=3] [ref=e83]
+              - button "Highlights Show excerpt highlight styling." [ref=e84] [cursor=pointer]:
+                - generic [ref=e85]:
+                  - strong [ref=e86]: Highlights
+                  - generic [ref=e87]: Show excerpt highlight styling.
+              - button "Margin Comments Include document-side annotations." [ref=e89] [cursor=pointer]:
+                - generic [ref=e90]:
+                  - strong [ref=e91]: Margin Comments
+                  - generic [ref=e92]: Include document-side annotations.
+            - generic [ref=e94]:
+              - heading "Workspace Notes" [level=3] [ref=e95]
+              - button "Comments Add each workspace comment." [ref=e96] [cursor=pointer]:
+                - generic [ref=e97]:
+                  - strong [ref=e98]: Comments
+                  - generic [ref=e99]: Add each workspace comment.
+              - button "Excerpts Add each workspace excerpt." [ref=e101] [cursor=pointer]:
+                - generic [ref=e102]:
+                  - strong [ref=e103]: Excerpts
+                  - generic [ref=e104]: Add each workspace excerpt.
+          - generic [ref=e106]:
+            - generic [ref=e107]: Document preview uses the source PDF and export annotations without changing the canvas.
+            - generic [ref=e108]:
+              - generic [ref=e115]:
+                - generic [ref=e116]: Page 1
+                - generic [ref=e118]: No source PDF loaded.
+              - complementary [ref=e119]:
+                - heading "Annotations" [level=2] [ref=e120]
+                - paragraph [ref=e121]: No highlights, anchors, or tags to export.
+        - generic [ref=e111]:
+          - button "Copy to Clipboard" [ref=e112] [cursor=pointer]
+          - button "Export PDF" [ref=e113] [cursor=pointer]
+  - button "Open Next.js Dev Tools" [ref=e44] [cursor=pointer]:
+    - img [ref=e45]
+  - alert [ref=e48]

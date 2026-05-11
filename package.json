@@ -12,14 +12,17 @@
   "scripts": {
     "dev": "npm run dev:web",
     "dev:web": "npm run dev --workspace @workspace/web -- --turbo",
+    "dev:mobile": "npm run dev --workspace @workspace/mobile -- --turbopack",
     "dev:server": "npm run dev --workspace @workspace/server",
     "build:web": "npm run build --workspace @workspace/web",
+    "build:mobile": "npm run build --workspace @workspace/mobile",
     "build": "npm run build --workspace @workspace/domain && npm run build --workspace @workspace/web && npm run build --workspace @workspace/server",
     "start:web": "npm run start --workspace @workspace/web",
+    "start:mobile": "npm run start --workspace @workspace/mobile",
     "test": "npm run test:unit",
-    "test:unit": "tsx apps/web/src/components/notes/note-editor.test.ts && tsx apps/web/src/lib/workspace/canvas-node-crud.test.ts && tsx apps/web/src/components/workspace/WorkspaceSelectionToolbar.test.ts",
+    "test:unit": "tsx apps/web/src/components/notes/note-editor.test.ts && tsx apps/web/src/lib/workspace/canvas-node-crud.test.ts && tsx apps/web/src/components/workspace/WorkspaceSelectionToolbar.test.ts && tsx apps/mobile/app/api/browser/_lib.test.ts && tsx apps/mobile/src/components/WebpageImportPanel.test.ts",
     "lint": "npm run lint --workspace @workspace/web",
-    "typecheck": "npm run typecheck --workspace @workspace/domain && npm run typecheck --workspace @workspace/web && npm run typecheck --workspace @workspace/server"
+    "typecheck": "npm run typecheck --workspace @workspace/domain && npm run typecheck --workspace @workspace/web && npm run typecheck --workspace @workspace/mobile && npm run typecheck --workspace @workspace/server"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

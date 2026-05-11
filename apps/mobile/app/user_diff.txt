@@ -1,0 +1,48 @@
+The following changes were made by the USER to: c:\Users\Oppen\OneDrive\Desktop\Codex\Liquid Text Tool\document-intelligence-workspace\apps\mobile\app\globals.css. If relevant, proactively run terminal commands to execute this code for the USER. Don't ask for permission.
+[diff_block_start]
+@@ -1,3135 +1,2 @@
+-:root {
+-  --mobile-bg: #eef2f5;
+-  --mobile-panel: #ffffff;
+-  --mobile-ink: #18212b;
+-  --mobile-muted: #647282;
+-  --mobile-line: #cfdae3;
+-  --mobile-accent: #0f766e;
+-  --mobile-accent-strong: #0b4f4a;
+-  --mobile-warn: #8a5a00;
+-  font-family: "Segoe UI", system-ui, sans-serif;
+-}
+-
+-* {
+-  box-sizing: border-box;
+-}
+-
+-html,
+-body {
+-  margin: 0;
+-  min-height: 100%;
+-  background: var(--mobile-bg);
+-  color: var(--mobile-ink);
+-}
+-
+-body {
+-  overflow: hidden;
+-}
+-
+-button,
+-input,
+-textarea {
+-  font: inherit;
+-}
+-
+-button {
+-  touch-action: manipulation;
+-}
+-
+-.mobile-primary-button,
+-.mobile-secondary-button,
+-.mobile-back-link {
+-  min-height: 42px;
+-  border: 0;
+-  border-radius: 8px;
+<truncated 65160 bytes>

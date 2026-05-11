@@ -1,0 +1,57 @@
+- generic [active] [ref=e1]:
+  - main [ref=e2]:
+    - generic [ref=e3]:
+      - generic [ref=e4]:
+        - generic [ref=e5]: Document Intelligence Workspace
+        - strong [ref=e6]: Selection → action popup → workspace node → linked navigation
+      - generic [ref=e7]:
+        - generic "Whole page zoom controls" [ref=e8]:
+          - button "Zoom out whole page" [ref=e9] [cursor=pointer]: "-"
+          - button "Reset whole page zoom" [ref=e10] [cursor=pointer]: 100%
+          - button "Zoom in whole page" [ref=e11] [cursor=pointer]: +
+        - button "Notes" [ref=e12] [cursor=pointer]
+        - button "Export" [ref=e13] [cursor=pointer]
+        - generic [ref=e14]: PDF.js • draggable workspace • SVG link layer
+    - generic [ref=e16]:
+      - generic [ref=e17]:
+        - generic [ref=e18]: Source Document
+        - generic [ref=e19]:
+          - button "Import PDF" [ref=e20] [cursor=pointer]
+          - generic [ref=e122]: textbox-toolbar-fixture.pdf
+          - generic "Page zoom controls" [ref=e123]:
+            - button "Zoom out page" [ref=e124] [cursor=pointer]: "-"
+            - button "Reset page zoom" [ref=e125] [cursor=pointer]: Page 100%
+            - button "Zoom in page" [ref=e126] [cursor=pointer]: +
+      - generic [ref=e21]:
+        - complementary [ref=e127]:
+          - generic [ref=e128]:
+            - generic [ref=e129]: Excerpts
+            - generic [ref=e130]: No excerpts yet.
+          - generic [ref=e131]:
+            - generic [ref=e132]: Bookmarks
+            - generic [ref=e133]: No bookmarks yet.
+          - generic [ref=e134]:
+            - generic [ref=e135]: Tags
+            - generic [ref=e136]:
+              - button "#counterpoint" [ref=e137] [cursor=pointer]
+              - button "#defined-term" [ref=e138] [cursor=pointer]
+              - button "#evidence" [ref=e139] [cursor=pointer]
+              - button "#follow-up" [ref=e140] [cursor=pointer]
+              - button "#important" [ref=e141] [cursor=pointer]
+              - button "#question" [ref=e142] [cursor=pointer]
+              - button "Clear Filter" [disabled] [ref=e143]
+        - generic [ref=e146]: Textbox toolbar fixture document This PDF is used to verify workspace textbox toolbar behavior while a document is loaded. Selecting text in the source document should not break textbox toolbar interactions.
+    - generic [ref=e28]:
+      - generic:
+        - generic: Workspace
+        - generic "Workspace zoom controls" [ref=e29]:
+          - button "Zoom out workspace" [ref=e30] [cursor=pointer]: −
+          - button "Zoom in workspace" [ref=e31] [cursor=pointer]: +
+      - generic "Workspace tools" [ref=e34]:
+        - button "Draw Textbox in Workspace" [ref=e35] [cursor=pointer]:
+          - generic [ref=e36]: AB+
+        - button "Add Workspace Card" [ref=e37] [cursor=pointer]:
+          - generic [ref=e38]: +
+  - button "Open Next.js Dev Tools" [ref=e44] [cursor=pointer]:
+    - img [ref=e45]
+  - alert [ref=e48]
