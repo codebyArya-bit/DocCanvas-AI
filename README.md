@@ -4,7 +4,7 @@ Document Intelligence Workspace is a LiquidText-inspired research and annotation
 
 The current implementation is focused on a local-first PDF workflow:
 
-- import a local PDF
+- import a local PDF or website Integration
 - select real text from the PDF text layer
 - create excerpts and comments anchored to source text
 - jump back from workspace nodes to the original PDF location
