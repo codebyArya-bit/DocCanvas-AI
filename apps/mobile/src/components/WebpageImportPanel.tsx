@@ -1,6 +1,6 @@
 'use client'
 
-import { type KeyboardEvent, type MouseEvent, useCallback, useEffect, useRef, useState } from 'react'
+import { type KeyboardEvent, type MouseEvent, useEffect, useRef, useState } from 'react'
 import { type MobileDocumentRecord } from '../lib/mobile-store'
 import { saveImportedWebDocument, type WebImportResponse } from '../lib/web-import'
 
@@ -675,7 +675,6 @@ export function WebpageImportPanel({ folderId, onImported, onStatusChange }: Web
         </button>
         <form
           className="webpage-import-row"
-          style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: '8px', width: '100%', padding: '4px 8px' }}
           onSubmit={(event) => {
             event.preventDefault()
             void search()
@@ -685,7 +684,6 @@ export function WebpageImportPanel({ folderId, onImported, onStatusChange }: Web
             value={inputValue}
             aria-label="Search or enter URL"
             inputMode="url"
-            style={{ flex: 1 }}
             placeholder="Search Bing or enter a URL"
             onChange={(event) => setInputValue(event.target.value)}
           />

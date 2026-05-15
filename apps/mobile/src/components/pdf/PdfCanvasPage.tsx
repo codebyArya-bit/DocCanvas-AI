@@ -8,6 +8,7 @@ interface PdfCanvasPageProps {
   page: PDFPageProxy
   pageNumber: number
   zoom: number
+  rotation?: number
 }
 
 type PdfTextLayerTaskLike = {
@@ -15,7 +16,7 @@ type PdfTextLayerTaskLike = {
   cancel?: () => void
 }
 
-export function PdfCanvasPage({ page, pageNumber, zoom }: PdfCanvasPageProps) {
+export function PdfCanvasPage({ page, pageNumber, zoom, rotation = 0 }: PdfCanvasPageProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const layerRef = useRef<HTMLDivElement>(null)
   const textLayerRef = useRef<HTMLDivElement>(null)
@@ -35,7 +36,7 @@ export function PdfCanvasPage({ page, pageNumber, zoom }: PdfCanvasPageProps) {
         const pdfjs = await initPdfJsOnce()
         if (cancelled) return
 
-        const viewport = page.getViewport({ scale: zoom })
+        const viewport = page.getViewport({ scale: zoom, rotation })
         const context = canvas.getContext('2d')
         if (!context) return
 
@@ -50,6 +51,7 @@ export function PdfCanvasPage({ page, pageNumber, zoom }: PdfCanvasPageProps) {
         textLayerElement.style.width = `${viewport.width}px`
         textLayerElement.style.height = `${viewport.height}px`
         textLayerElement.style.setProperty('--total-scale-factor', String(zoom))
+        textLayerElement.dataset.mainRotation = String(rotation)
         textLayerElement.textContent = ''
 
         if (renderTaskRef.current) {
@@ -115,7 +117,7 @@ export function PdfCanvasPage({ page, pageNumber, zoom }: PdfCanvasPageProps) {
         textLayerTaskRef.current = null
       }
     }
-  }, [page, pageNumber, zoom])
+  }, [page, pageNumber, zoom, rotation])
 
   return (
     <div ref={layerRef} className="page mobile-pdf-page-layer pdf-canvas-page" data-page-number={pageNumber} data-viewport-scale={zoom}>
@@ -129,7 +131,7 @@ export function PdfCanvasPage({ page, pageNumber, zoom }: PdfCanvasPageProps) {
           height: 'auto'
         }}
       />
-      <div ref={textLayerRef} className="textLayer mobile-pdf-text-layer" data-main-rotation="0" />
+      <div ref={textLayerRef} className="textLayer mobile-pdf-text-layer" data-main-rotation={rotation} />
     </div>
   )
 }

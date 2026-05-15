@@ -6,6 +6,7 @@ import {
   parseWorkspaceToolbarTags
 } from './MobileWorkspaceCanvas'
 import type { CanvasNode } from '@workspace/domain'
+import { readFileSync } from 'node:fs'
 
 assert.deepEqual(parseWorkspaceToolbarTags(' alpha, beta ,, gamma '), ['alpha', 'beta', 'gamma'])
 assert.deepEqual(parseWorkspaceToolbarTags(''), [])
@@ -57,5 +58,29 @@ const position = findFirstAvailableWorkspacePosition(
   [sourceNode, occupied]
 )
 assert.deepEqual(position, { x: -228, y: 120, width: 300, height: 156 })
+
+const canvasSource = readFileSync(new URL('./MobileWorkspaceCanvas.tsx', import.meta.url), 'utf8')
+assert.match(canvasSource, /const MIN_NODE_POSITION = -INFINITE_CANVAS_PADDING/)
+assert.match(canvasSource, /const WORKSPACE_CANVAS_SURFACE_WIDTH = 2200/)
+assert.match(canvasSource, /const WORKSPACE_CANVAS_SURFACE_HEIGHT = 1800/)
+assert.match(canvasSource, /const WORKSPACE_INK_TOOL_MODES = new Set<ToolMode>\(\['pen', 'pencil', 'freeform-highlight', 'eraser'\]\)/)
+assert.match(canvasSource, /workspace-canvas-viewport/)
+assert.match(canvasSource, /className="mobile-canvas-grid workspace-canvas-surface"/)
+assert.match(canvasSource, /width: WORKSPACE_CANVAS_SURFACE_WIDTH/)
+assert.match(canvasSource, /height: WORKSPACE_CANVAS_SURFACE_HEIGHT/)
+assert.match(canvasSource, /transform: `translate\(\$\{viewport\.panX\}px, \$\{viewport\.panY\}px\) scale\(\$\{viewport\.workspaceZoom\}\)`/)
+assert.match(canvasSource, /function WorkspaceInkLayer/)
+assert.match(canvasSource, /data-workspace-ink-canvas="true"/)
+assert.match(canvasSource, /className="mobile-workspace-ink-canvas"/)
+assert.match(canvasSource, /isWorkspaceInkMode \|\| event\.target !== event\.currentTarget/)
+assert.match(canvasSource, /workspacePointFromPointer/)
+assert.match(canvasSource, /event\.clientX - rect\.left - viewport\.panX/)
+assert.match(canvasSource, /event\.clientY - rect\.top - viewport\.panY/)
+assert.match(canvasSource, /drawLiveWorkspaceInkSegment/)
+assert.match(canvasSource, /surface: 'workspace'/)
+assert.match(canvasSource, /onWorkspaceEraseInk/)
+assert.match(canvasSource, /Math\.max\(MIN_NODE_POSITION, dragging\.nodeX/)
+assert.match(canvasSource, /Math\.max\(MIN_NODE_POSITION, x\)/)
+assert.match(canvasSource, /onFocus=\{\(\) => \{\s*onActiveNodeChange\(node\.id\)\s*setToolbarNodeId\(node\.id\)/s)
 
 console.log('Mobile workspace canvas toolbar helper tests passed')

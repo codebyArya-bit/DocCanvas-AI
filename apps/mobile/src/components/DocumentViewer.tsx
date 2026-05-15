@@ -2,13 +2,14 @@
 
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { type PointerEvent as ReactPointerEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject, type WheelEvent as ReactWheelEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist'
-import type { CanvasNode, PageAnchor } from '@workspace/domain'
+import type { CanvasNode, PageAnchor, TextStyle } from '@workspace/domain'
 import bookmarkIcon from './bookmark.png'
 import { PdfCanvasPage } from './pdf/PdfCanvasPage'
 import { SelectionManager, type SelectionPopupState as PdfSelectionPopupState } from './pdf/SelectionManager'
 import { MobileWorkspaceCanvas } from './MobileWorkspaceCanvas'
+import { SharedTextboxToolbar } from './SharedTextboxToolbar'
 import {
   dispatchInteractionAction,
   normalizePointer,
@@ -21,6 +22,8 @@ import {
   loadMobileDocument,
   loadMobileWorkspace,
   markMobileDocumentOpened,
+  deleteMobileDocuments,
+  saveMobileDocument,
   saveMobileWorkspace,
   type FreeformHighlight,
   type InkStroke,
@@ -30,10 +33,12 @@ import {
   type MobileWorkspaceState,
   type NormalizedPoint,
   type SourceTextbox,
+  type TagDefinition,
   type ToolMode
 } from '../lib/mobile-store'
 import { destroyPdfTask, openPdfDocument, type PdfLoadingTaskLike } from '../lib/pdf-loader'
 import { convertClientRectsToPageAnchorGeometry } from '../lib/excerpts/pdf-selection'
+import { resolveSelectionPopupPosition, type SelectionPopupPlacement, type SelectionViewportRect } from '../lib/selection-popup-position'
 import {
   anchorMarkerPosition,
   anchorToHighlightRects,
@@ -56,7 +61,7 @@ import {
   escapeHtml,
   fallbackSections,
   findSemanticSearchHit,
-  pointsToPolyline,
+  getPageRotation,
   resetSplitRatio,
   sourceKindLabel,
   upsertById,
@@ -69,16 +74,9 @@ import {
 type LoadState = 'idle' | 'loading' | 'loaded' | 'error'
 type PaneMode = 'source' | 'workspace'
 type PanelMode = 'source-tools' | 'navigate' | 'share' | 'more' | 'highlight-view' | 'page-edit' | 'documents' | 'bookmarks' | null
-type LeftPopupMode = 'highlight-view' | 'documents' | 'bookmarks' | 'share' | null
+type LeftPopupMode = 'highlight-view' | 'documents' | 'bookmarks' | 'share' | 'more' | null
 
-type SelectionRect = {
-  left: number
-  top: number
-  right: number
-  bottom: number
-  width: number
-  height: number
-}
+type SelectionRect = SelectionViewportRect
 
 type SelectionPopupState = {
   selection: SelectionArtifactInput
@@ -87,6 +85,17 @@ type SelectionPopupState = {
   selectionRect?: SelectionRect
   color?: string
   tags: string[]
+  tagDraft: string
+}
+
+type SourceSelectionMagnifierState = {
+  left: number
+  top: number
+  text: string
+  selectionColor: string
+  width: number
+  maxWidth: number
+  fontSize: number
 }
 
 type CapturedSourceSelection = {
@@ -110,9 +119,24 @@ type DraftPath = {
   points: NormalizedPoint[]
 }
 
+type GlobalInkSurface =
+  | { kind: 'source'; pageNumber: number; element: HTMLElement; point: NormalizedPoint }
+  | { kind: 'source-pane'; point: NormalizedPoint }
+  | { kind: 'workspace'; point: NormalizedPoint }
+
+type GlobalInkDraft = {
+  kind: 'freeform-highlight' | 'pen' | 'pencil'
+  surface: GlobalInkSurface['kind']
+  pageNumber?: number
+  points: NormalizedPoint[]
+  screenPoints: NormalizedPoint[]
+}
+
 const ZOOM_STEP = 0.1
 const clampAppZoom = (value: number) => Math.max(0.4, Math.min(1.5, Number(value.toFixed(2))))
 const SOURCE_PANE_HORIZONTAL_PADDING = 32
+const INK_TOOL_MODES = new Set<ToolMode>(['pen', 'pencil', 'freeform-highlight', 'eraser'])
+const INK_COLORS = ['#111111', '#ef4444', '#f97316', '#facc15', '#22c55e', '#06b6d4', '#3b82f6', '#8b5cf6']
 const SOURCE_TOOLS: Array<{ mode: ToolMode; label: string; icon: IconName }> = [
   { mode: 'select', label: 'Select', icon: 'select' },
   { mode: 'pen', label: 'Pen', icon: 'pen' },
@@ -125,8 +149,10 @@ const SOURCE_TOOLS: Array<{ mode: ToolMode; label: string; icon: IconName }> = [
 export function DocumentViewer({ docId }: { docId: string }) {
   const router = useRouter()
   const activeDocIdRef = useRef(docId)
+  const viewerBodyRef = useRef<HTMLElement | null>(null)
   const sourcePaneRef = useRef<HTMLDivElement | null>(null)
   const activeToolPageRef = useRef<HTMLElement | null>(null)
+  const readableSelectingRef = useRef(false)
   const splitFrameRef = useRef<number | null>(null)
   const pendingSplitRef = useRef<number | null>(null)
   const [loadState, setLoadState] = useState<LoadState>('idle')
@@ -139,8 +165,10 @@ export function DocumentViewer({ docId }: { docId: string }) {
   const [panelMode, setPanelMode] = useState<PanelMode>(null)
   const [leftPopup, setLeftPopup] = useState<LeftPopupMode>(null)
   const [draftPath, setDraftPath] = useState<DraftPath | null>(null)
+  const draftPathRef = useRef<DraftPath | null>(null)
   const [selectionPopup, setSelectionPopup] = useState<SelectionPopupState | null>(null)
   const [pdfSelectionPopup, setPdfSelectionPopup] = useState<PdfSelectionPopupState | null>(null)
+  const [sourceMagnifier, setSourceMagnifier] = useState<SourceSelectionMagnifierState | null>(null)
   const [query, setQuery] = useState('')
   const [pageInput, setPageInput] = useState('')
   const [tagInput, setTagInput] = useState('')
@@ -148,6 +176,15 @@ export function DocumentViewer({ docId }: { docId: string }) {
   const [viewportSize, setViewportSize] = useState({ width: 1280, height: 800 })
   const [sourcePaneWidth, setSourcePaneWidth] = useState(0)
   const [sourceScrollVersion, setSourceScrollVersion] = useState(0)
+  const [documentFilter, setDocumentFilter] = useState('')
+  const [highlightFilter, setHighlightFilter] = useState('')
+  const [openDocumentOptionsId, setOpenDocumentOptionsId] = useState<string | null>(null)
+
+  const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false)
+  const toggleLeftPanel = () => setLeftPanelCollapsed(prev => !prev)
+
+  const [documentPopupAnchor, setDocumentPopupAnchor] = useState<HTMLElement | null>(null)
+  const [documentPopupTab, setDocumentPopupTab] = useState<'documents' | 'outline'>('documents')
 
   const sourceKind = record ? getDocumentSourceKind(record) : 'pdf'
   const viewerState = workspace && record ? getDocumentViewerState(workspace, record.document.id) : { viewerZoom: 1, sourceZoom: 1, workspaceZoom: 1, scrollPosition: 0, activePage: 1 }
@@ -170,6 +207,14 @@ export function DocumentViewer({ docId }: { docId: string }) {
       )
     })
   }, [record, workspace])
+  const pageEditDeletedPages = useMemo(() => {
+    if (!record || !workspace) return new Set<number>()
+    return new Set(
+      (workspace.pageEdits ?? [])
+        .filter((edit) => edit.documentId === record.document.id && edit.action === 'delete')
+        .map((edit) => edit.pageNumber)
+    )
+  }, [record, workspace])
   const linkedSourceAnchors = useMemo(() => {
     if (!workspace || !record) return []
     const linkedAnchorIds = new Set(
@@ -191,9 +236,29 @@ export function DocumentViewer({ docId }: { docId: string }) {
   const sourceFitScale = useMemo(() => {
     if (!basePdfPageWidth || !sourcePaneWidth) return 1
     const availableWidth = Math.max(120, sourcePaneWidth - SOURCE_PANE_HORIZONTAL_PADDING)
-    return Math.min(1, availableWidth / basePdfPageWidth)
-  }, [basePdfPageWidth, sourcePaneWidth])
+    // basePdfPageWidth is measured at scale 1.25, so the unscaled page width = basePdfPageWidth / 1.25.
+    // Ensure viewport width (unscaledWidth * sourceZoom * sourceFitScale) never exceeds availableWidth,
+    // preventing CSS max-width:100% from creating a mismatch between viewport and visual space.
+    const maxFitScale = (availableWidth * 1.25) / (basePdfPageWidth * (viewerState.sourceZoom || 0.4))
+    return Math.min(1, maxFitScale)
+  }, [basePdfPageWidth, sourcePaneWidth, viewerState.sourceZoom])
   const effectiveSourceZoom = viewerState.sourceZoom * sourceFitScale
+  const currentDocumentMarks = useMemo(() => {
+    if (!workspace || !record) return []
+    return workspace.anchors
+      .filter((anchor) => anchor.documentId === record.document.id && Boolean(anchor.selectionColor || anchor.tags?.length || anchor.textQuote))
+      .sort((left, right) => left.pageNumber - right.pageNumber)
+  }, [record, workspace])
+  const filteredDocuments = useMemo(() => {
+    const queryText = documentFilter.trim().toLowerCase()
+    if (!queryText) return documents
+    return documents.filter((entry) => entry.document.title.toLowerCase().includes(queryText))
+  }, [documentFilter, documents])
+  const filteredHighlights = useMemo(() => {
+    const queryText = highlightFilter.trim().toLowerCase()
+    if (!queryText) return currentDocumentMarks
+    return currentDocumentMarks.filter((anchor) => `${anchor.textQuote} ${(anchor.tags ?? []).join(' ')}`.toLowerCase().includes(queryText))
+  }, [currentDocumentMarks, highlightFilter])
 
   const persistWorkspace = useCallback((nextWorkspace: MobileWorkspaceState) => {
     setWorkspace(nextWorkspace)
@@ -221,6 +286,12 @@ export function DocumentViewer({ docId }: { docId: string }) {
     },
     [updateWorkspace]
   )
+
+  const updateDraftPath = useCallback((next: DraftPath | null | ((current: DraftPath | null) => DraftPath | null)) => {
+    const resolved = typeof next === 'function' ? next(draftPathRef.current) : next
+    draftPathRef.current = resolved
+    setDraftPath(resolved)
+  }, [])
 
   useEffect(() => {
     function measureViewport() {
@@ -430,17 +501,34 @@ export function DocumentViewer({ docId }: { docId: string }) {
       selectionColor: workspace.toolSettings.highlight.color,
       tags: []
     }
+    const existingAnchor = findExistingAnchorForSelection(selection)
+    const existingTags = existingAnchor?.tags ?? []
     const rect = window.getSelection()?.rangeCount ? window.getSelection()?.getRangeAt(0).getBoundingClientRect() : null
     setSelectionPopup({
-      selection,
+      selection: { ...selection, selectionColor: existingAnchor?.selectionColor ?? workspace.toolSettings.highlight.color, tags: existingTags },
       left: Math.max(12, Math.min(window.innerWidth - 320, rect ? rect.left : 80)),
       top: rect ? rect.bottom + 12 : 120,
       selectionRect: rect
         ? { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, width: rect.width, height: rect.height }
         : undefined,
-      color: workspace.toolSettings.highlight.color,
-      tags: []
+      color: existingAnchor?.selectionColor ?? workspace.toolSettings.highlight.color,
+      tags: existingTags,
+      tagDraft: existingTags.join(', ')
     })
+  }
+
+  function findExistingAnchorForSelection(selection: SelectionArtifactInput) {
+    if (!workspace) return null
+    return workspace.anchors.find((anchor) => {
+      if (anchor.documentId !== selection.documentId || anchor.pageNumber !== selection.pageNumber) return false
+      const sameText = anchor.textQuote.trim().toLowerCase() === selection.text.trim().toLowerCase()
+      const sameSpan =
+        anchor.startSpanIndex === selection.startSpanIndex &&
+        anchor.endSpanIndex === selection.endSpanIndex &&
+        anchor.startOffset === selection.startOffset &&
+        anchor.endOffset === selection.endOffset
+      return sameText || sameSpan
+    }) ?? null
   }
 
   function upsertAnchor(anchor: PageAnchor) {
@@ -489,20 +577,50 @@ export function DocumentViewer({ docId }: { docId: string }) {
   function bookmarkSelection(popup: SelectionPopupState) {
     if (!workspace) return
     const selection = { ...popup.selection, selectionColor: popup.color ?? '#5d5df6', tags: popup.tags }
-    commitSourceWorkspace((current) => applyBookmarkSelection(current, selection))
+    const anchor = buildPageAnchor(selection)
+    commitSourceWorkspace((current) => {
+      const alreadyBookmarked = current.bookmarks.some(
+        (bookmark) => bookmark.documentId === selection.documentId && bookmark.sourceAnchorId === anchor.id
+      )
+      if (!alreadyBookmarked) return applyBookmarkSelection(current, selection)
+      return {
+        ...current,
+        bookmarks: current.bookmarks.filter(
+          (bookmark) => !(bookmark.documentId === selection.documentId && bookmark.sourceAnchorId === anchor.id)
+        ),
+        activeAnchorId: current.activeAnchorId === anchor.id ? null : current.activeAnchorId,
+        updatedAt: new Date().toISOString()
+      }
+    })
     setSelectionPopup(null)
   }
 
   function bookmarkPdfSelection(selection: SelectionArtifactInput) {
     if (!workspace) return
-    commitSourceWorkspace((current) => applyBookmarkSelection(current, selection))
+    const anchor = buildPageAnchor(selection)
+    commitSourceWorkspace((current) => {
+      const alreadyBookmarked = current.bookmarks.some(
+        (bookmark) => bookmark.documentId === selection.documentId && bookmark.sourceAnchorId === anchor.id
+      )
+      if (!alreadyBookmarked) return applyBookmarkSelection(current, selection)
+      return {
+        ...current,
+        bookmarks: current.bookmarks.filter(
+          (bookmark) => !(bookmark.documentId === selection.documentId && bookmark.sourceAnchorId === anchor.id)
+        ),
+        activeAnchorId: current.activeAnchorId === anchor.id ? null : current.activeAnchorId,
+        updatedAt: new Date().toISOString()
+      }
+    })
     setPdfSelectionPopup(null)
   }
 
   function tagSelection(popup: SelectionPopupState, tags: string[]) {
-    const selection = { ...popup.selection, selectionColor: popup.color ?? '#5d5df6', tags }
+    const existingAnchor = findExistingAnchorForSelection(popup.selection)
+    const preservedColor = existingAnchor?.selectionColor
+    const selection = { ...popup.selection, selectionColor: preservedColor ?? '', tags }
     commitSourceWorkspace((current) => applyTagSelection(current, selection, tags))
-    setSelectionPopup({ ...popup, tags })
+    setSelectionPopup({ ...popup, selection, tags, tagDraft: tags.join(', ') })
   }
 
   function tagPdfSelection(selection: SelectionArtifactInput, tags: string[]) {
@@ -552,7 +670,8 @@ export function DocumentViewer({ docId }: { docId: string }) {
         ? { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, width: rect.width, height: rect.height }
         : undefined,
       color: anchor.selectionColor,
-      tags: anchor.tags ?? []
+      tags: anchor.tags ?? [],
+      tagDraft: (anchor.tags ?? []).join(', ')
     })
     focusAnchor(anchor.id)
   }
@@ -581,6 +700,9 @@ export function DocumentViewer({ docId }: { docId: string }) {
   }
 
   function setToolMode(mode: ToolMode) {
+    readableSelectingRef.current = false
+    document.body.classList.remove('is-selecting-pdf-text')
+    setSourceMagnifier(null)
     updateWorkspace((current) => dispatchInteractionAction(current, { type: 'SET_TOOL_MODE', mode }))
   }
 
@@ -592,88 +714,53 @@ export function DocumentViewer({ docId }: { docId: string }) {
     }))
   }
 
-  function handlePointerDown(event: React.PointerEvent<HTMLElement>) {
-    if (!workspace || !record || !toolSettings) return
-    if (event.target instanceof Element && event.target.closest('.mobile-source-textbox-shell')) {
-      return
-    }
-    if (toolMode === 'select') {
-      setSelectionPopup(null)
-      return
-    }
-    if (!['freeform-highlight', 'pen', 'pencil', 'eraser', 'textbox'].includes(toolMode)) return
-    const pageElement = findAnnotatedPageFromPointer(event)
-    if (!pageElement) return
-    event.preventDefault()
-    activeToolPageRef.current = pageElement
-    const point = normalizePointer(event.clientX, event.clientY, pageElement)
-    const pageNumber = Number(pageElement.dataset.pageNumber ?? 1)
-
-    if (toolMode === 'textbox') {
-      const now = new Date().toISOString()
-      const textbox: SourceTextbox = {
-        id: crypto.randomUUID(),
-        documentId: record.document.id,
-        pageNumber,
-        xNorm: point.x,
-        yNorm: point.y,
-        widthNorm: 0.3,
-        heightNorm: 0.16,
-        content: ''
-      }
-      updateWorkspace((current) => dispatchInteractionAction(current, { type: 'ADD_SOURCE_TEXTBOX', payload: textbox }))
-      activeToolPageRef.current = null
-      void now
-      return
-    }
-
-    if (toolMode === 'eraser') {
-      const anchorId = findSourceAnchorIdFromPointer(event.clientX, event.clientY)
-      updateWorkspace((current) =>
-        dispatchInteractionAction(current, {
-          type: 'ERASE_AT_POINT',
-          payload: { documentId: record.document.id, pageNumber, point, size: toolSettings.eraser.size, anchorId }
-        })
-      )
-      activeToolPageRef.current = null
-      return
-    }
-
-    if (toolMode === 'freeform-highlight' || toolMode === 'pen' || toolMode === 'pencil') {
-      event.currentTarget.setPointerCapture(event.pointerId)
-      setDraftPath({ kind: toolMode, pageNumber, points: [point] })
-    }
+  function clearCurrentPageInk() {
+    if (!record || !workspace) return
+    const pageNumber = viewerState.activePage
+    const pageHighlights = (workspace.freeformHighlights ?? []).filter((entry) => entry.surface !== 'workspace' && entry.surface !== 'source-pane' && entry.documentId === record.document.id && (entry.pageNumber ?? 1) === pageNumber)
+    const pageInk = (workspace.inkStrokes ?? []).filter((entry) => entry.surface !== 'workspace' && entry.surface !== 'source-pane' && entry.documentId === record.document.id && (entry.pageNumber ?? 1) === pageNumber)
+    const clearCount = pageHighlights.length + pageInk.length
+    if (clearCount === 0) return
+    if (!window.confirm(`Clear ${clearCount} ink mark${clearCount === 1 ? '' : 's'} from page ${pageNumber}?`)) return
+    updateWorkspace((current) =>
+      dispatchInteractionAction(current, {
+        type: 'CLEAR_PAGE_INK',
+        payload: {
+          documentId: record.document.id,
+          pageNumber
+        }
+      })
+    )
   }
 
-  function handlePointerMove(event: React.PointerEvent<HTMLElement>) {
-    if (!draftPath) return
-    const pageElement = activeToolPageRef.current ?? findAnnotatedPageFromPointer(event)
-    if (!pageElement || Number(pageElement.dataset.pageNumber ?? 1) !== draftPath.pageNumber) return
-    event.preventDefault()
-    const point = normalizePointer(event.clientX, event.clientY, pageElement)
-    setDraftPath((current) => (current ? { ...current, points: [...current.points, point] } : current))
+  function startInkDraft(kind: DraftPath['kind'], pageNumber: number, point: NormalizedPoint) {
+    updateDraftPath({ kind, pageNumber, points: [point] })
   }
 
-  function handlePointerUp() {
-    if (!draftPath) {
-      if (sourceKind === 'web-clean') window.setTimeout(captureSourceSelection, 0)
+  function moveInkDraft(pageNumber: number, point: NormalizedPoint) {
+    const current = draftPathRef.current
+    if (!current || current.pageNumber !== pageNumber) return
+    draftPathRef.current = { ...current, points: [...current.points, point] }
+  }
+
+  function commitInkDraft() {
+    const currentDraftPath = draftPathRef.current
+    if (!currentDraftPath || !record || !toolSettings) {
+      updateDraftPath(null)
       return
     }
-    if (!draftPath || !record || !toolSettings) {
-      setDraftPath(null)
-      return
-    }
-    const points = draftPath.kind === 'freeform-highlight' && toolSettings.highlight.smoothed ? simplifyPath(draftPath.points) : draftPath.points
+    const points = currentDraftPath.kind === 'freeform-highlight' && toolSettings.highlight.smoothed ? simplifyPath(currentDraftPath.points) : currentDraftPath.points
     if (points.length < 2) {
-      setDraftPath(null)
+      updateDraftPath(null)
       activeToolPageRef.current = null
       return
     }
-    if (draftPath.kind === 'freeform-highlight') {
+    if (currentDraftPath.kind === 'freeform-highlight') {
       const payload: FreeformHighlight = {
         id: crypto.randomUUID(),
         documentId: record.document.id,
-        pageNumber: draftPath.pageNumber,
+        surface: 'source',
+        pageNumber: currentDraftPath.pageNumber,
         points,
         color: toolSettings.highlight.color,
         size: toolSettings.highlight.size,
@@ -682,11 +769,12 @@ export function DocumentViewer({ docId }: { docId: string }) {
       }
       updateWorkspace((current) => dispatchInteractionAction(current, { type: 'ADD_FREEFORM_HIGHLIGHT', payload }))
     } else {
-      const isPencil = draftPath.kind === 'pencil'
+      const isPencil = currentDraftPath.kind === 'pencil'
       const payload: InkStroke = {
         id: crypto.randomUUID(),
         documentId: record.document.id,
-        pageNumber: draftPath.pageNumber,
+        surface: 'source',
+        pageNumber: currentDraftPath.pageNumber,
         tool: isPencil ? 'pencil' : 'pen',
         points,
         color: isPencil ? toolSettings.pencil.color : toolSettings.pen.color,
@@ -695,8 +783,322 @@ export function DocumentViewer({ docId }: { docId: string }) {
       }
       updateWorkspace((current) => dispatchInteractionAction(current, { type: 'ADD_INK_STROKE', payload }))
     }
-    setDraftPath(null)
+    updateDraftPath(null)
     activeToolPageRef.current = null
+  }
+
+  function eraseInkAtPoint(pageNumber: number, point: NormalizedPoint, clientX: number, clientY: number) {
+    if (!record || !toolSettings) return
+    const anchorId = findSourceAnchorIdFromPointer(clientX, clientY)
+    updateWorkspace((current) =>
+      dispatchInteractionAction(current, {
+        type: 'ERASE_AT_POINT',
+        payload: { documentId: record.document.id, pageNumber, point, size: toolSettings.eraser.size, anchorId }
+      })
+    )
+  }
+
+  function routeGlobalInkPoint(clientX: number, clientY: number): GlobalInkSurface | null {
+    if (!record || !workspace) return null
+    const elements = document.elementsFromPoint(clientX, clientY)
+    const pageElement = elements.find((element) => element instanceof HTMLElement && element.classList.contains('mobile-annotated-page')) as HTMLElement | undefined
+    if (pageElement) {
+      return {
+        kind: 'source',
+        pageNumber: Number(pageElement.dataset.pageNumber ?? 1),
+        element: pageElement,
+        point: normalizePointInSourceInkBounds(clientX, clientY, pageElement)
+      }
+    }
+
+    const sourcePane = sourcePaneRef.current
+    const sourceRect = sourcePane?.getBoundingClientRect()
+    if (sourceRect && clientX >= sourceRect.left && clientX <= sourceRect.right && clientY >= sourceRect.top && clientY <= sourceRect.bottom) {
+      return {
+        kind: 'source-pane',
+        point: {
+          x: Math.max(0, Math.min(1, (clientX - sourceRect.left) / Math.max(1, sourceRect.width))),
+          y: Math.max(0, Math.min(1, (clientY - sourceRect.top) / Math.max(1, sourceRect.height)))
+        }
+      }
+    }
+
+    const workspaceCanvas = document.querySelector<HTMLElement>('.mobile-workspace-canvas')
+    const workspaceRect = workspaceCanvas?.getBoundingClientRect()
+    if (workspaceRect && clientX >= workspaceRect.left && clientX <= workspaceRect.right && clientY >= workspaceRect.top && clientY <= workspaceRect.bottom) {
+      return {
+        kind: 'workspace',
+        point: {
+          x: (clientX - workspaceRect.left - (workspace.workspaceViewport.panX ?? 0)) / viewerState.workspaceZoom,
+          y: (clientY - workspaceRect.top - (workspace.workspaceViewport.panY ?? 0)) / viewerState.workspaceZoom
+        }
+      }
+    }
+
+    return null
+  }
+
+  function eraseGlobalInkAt(route: GlobalInkSurface, clientX: number, clientY: number) {
+    if (!record || !toolSettings) return
+    if (route.kind === 'source') {
+      eraseInkAtPoint(route.pageNumber, route.point, clientX, clientY)
+      return
+    }
+    updateWorkspace((current) =>
+      dispatchInteractionAction(current, {
+        type: 'ERASE_SURFACE_INK_AT_POINT',
+        payload: {
+          documentId: record.document.id,
+          surface: route.kind,
+          point: route.point,
+          size: route.kind === 'workspace' ? toolSettings.eraser.size / Math.max(viewerState.workspaceZoom, 0.3) : toolSettings.eraser.size
+        }
+      })
+    )
+  }
+
+  function scrollGlobalInkSurface(event: ReactWheelEvent<HTMLCanvasElement>) {
+    if (!workspace) return
+    const route = routeGlobalInkPoint(event.clientX, event.clientY)
+    if (!route) return
+    event.preventDefault()
+    event.stopPropagation()
+
+    if (route.kind === 'source' || route.kind === 'source-pane') {
+      sourcePaneRef.current?.scrollBy({ left: event.deltaX, top: event.deltaY, behavior: 'auto' })
+      return
+    }
+
+    const direction = workspace.reverseScrollDirection ? -1 : 1
+    if (event.ctrlKey || event.metaKey || (workspace.scrollWheelBehavior ?? 'zoom') === 'zoom') {
+      const nextZoom = Math.max(0.3, Math.min(3, Number((viewerState.workspaceZoom * Math.exp(-event.deltaY * direction * 0.001)).toFixed(2))))
+      updateWorkspace((current) => ({
+        ...current,
+        viewerStateByDocument: record ? {
+          ...current.viewerStateByDocument,
+          [record.document.id]: {
+            ...getDocumentViewerState(current, record.document.id),
+            workspaceZoom: nextZoom
+          }
+        } : current.viewerStateByDocument,
+        updatedAt: new Date().toISOString()
+      }))
+      return
+    }
+
+    updateWorkspace((current) => ({
+      ...current,
+      workspaceViewport: {
+        ...current.workspaceViewport,
+        panX: (current.workspaceViewport.panX ?? 0) - event.deltaX * direction,
+        panY: (current.workspaceViewport.panY ?? 0) - event.deltaY * direction
+      },
+      updatedAt: new Date().toISOString()
+    }))
+  }
+
+  function commitGlobalInkDraft(draft: GlobalInkDraft) {
+    if (!record || !toolSettings || draft.points.length < 2) return
+    const points = draft.kind === 'freeform-highlight' && toolSettings.highlight.smoothed ? simplifyPath(draft.points) : draft.points
+    if (points.length < 2) return
+
+    if (draft.kind === 'freeform-highlight') {
+      const payload: FreeformHighlight = {
+        id: crypto.randomUUID(),
+        documentId: record.document.id,
+        surface: draft.surface,
+        pageNumber: draft.surface === 'source' ? draft.pageNumber : undefined,
+        points,
+        color: toolSettings.highlight.color,
+        size: toolSettings.highlight.size,
+        opacity: toolSettings.highlight.opacity,
+        smoothed: toolSettings.highlight.smoothed
+      }
+      updateWorkspace((current) => dispatchInteractionAction(current, { type: 'ADD_FREEFORM_HIGHLIGHT', payload }))
+      return
+    }
+
+    const isPencil = draft.kind === 'pencil'
+    const payload: InkStroke = {
+      id: crypto.randomUUID(),
+      documentId: record.document.id,
+      surface: draft.surface,
+      pageNumber: draft.surface === 'source' ? draft.pageNumber : undefined,
+      tool: isPencil ? 'pencil' : 'pen',
+      points,
+      color: isPencil ? toolSettings.pencil.color : toolSettings.pen.color,
+      size: isPencil ? toolSettings.pencil.size : toolSettings.pen.size,
+      opacity: isPencil ? toolSettings.pencil.opacity : undefined
+    }
+    updateWorkspace((current) => dispatchInteractionAction(current, { type: 'ADD_INK_STROKE', payload }))
+  }
+
+  function handlePointerDown(event: React.PointerEvent<HTMLElement>) {
+    if (!workspace || !record || !toolSettings) return
+    if (event.target instanceof Element && event.target.closest('.mobile-source-textbox-shell')) {
+      return
+    }
+    if (toolMode === 'select') {
+      setSelectionPopup(null)
+      setSourceMagnifier(null)
+      const target = event.target instanceof Element ? event.target : null
+      const canTrackReadableSelection = sourceKind === 'web-clean' && Boolean(target?.closest('.mobile-readable-page'))
+      readableSelectingRef.current = canTrackReadableSelection
+      document.body.classList.toggle('is-selecting-pdf-text', canTrackReadableSelection)
+      return
+    }
+    if (INK_TOOL_MODES.has(toolMode)) return
+    if (toolMode !== 'textbox') return
+    const pageElement = findAnnotatedPageFromPointer(event)
+    if (!pageElement) return
+    event.preventDefault()
+    activeToolPageRef.current = pageElement
+    const point = normalizePointer(event.clientX, event.clientY, pageElement)
+    const pageNumber = Number(pageElement.dataset.pageNumber ?? 1)
+
+    const now = new Date().toISOString()
+    const textbox: SourceTextbox = {
+      id: crypto.randomUUID(),
+      documentId: record.document.id,
+      pageNumber,
+      xNorm: point.x,
+      yNorm: point.y,
+      widthNorm: 0.3,
+      heightNorm: 0.16,
+      content: ''
+    }
+    updateWorkspace((current) => dispatchInteractionAction(current, { type: 'ADD_SOURCE_TEXTBOX', payload: textbox }))
+    activeToolPageRef.current = null
+    setToolMode('select')
+    void now
+  }
+
+  function handlePointerMove(event: React.PointerEvent<HTMLElement>) {
+    if (!draftPath && toolMode === 'select' && sourceKind === 'web-clean' && event.buttons === 1) {
+      if (readableSelectingRef.current) {
+        updateReadableSelectionMagnifier(sourcePaneRef.current, toolSettings?.highlight.color ?? '#5d5df6', setSourceMagnifier)
+      }
+      return
+    }
+    if (!draftPath) return
+  }
+
+  function handlePointerUp(event: React.PointerEvent<HTMLElement>) {
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+    if (!draftPath) {
+      if (sourceKind === 'web-clean') {
+        readableSelectingRef.current = false
+        document.body.classList.remove('is-selecting-pdf-text')
+        setSourceMagnifier(null)
+        window.setTimeout(captureSourceSelection, 0)
+      }
+      return
+    }
+    commitInkDraft()
+  }
+
+  useEffect(() => {
+    if (sourceKind !== 'web-clean') return
+
+    const handleSelectionChange = () => {
+      if (!readableSelectingRef.current) return
+      updateReadableSelectionMagnifier(sourcePaneRef.current, toolSettings?.highlight.color ?? '#5d5df6', setSourceMagnifier)
+    }
+
+    document.addEventListener('selectionchange', handleSelectionChange)
+    return () => {
+      document.removeEventListener('selectionchange', handleSelectionChange)
+      readableSelectingRef.current = false
+      document.body.classList.remove('is-selecting-pdf-text')
+    }
+  }, [sourceKind, toolSettings?.highlight.color])
+
+  function closeLeftPopup() {
+    setLeftPopup(null)
+    setOpenDocumentOptionsId(null)
+  }
+
+  function openLeftPopup(mode: Exclude<LeftPopupMode, null>) {
+    setPanelMode(null)
+    setLeftPopup((current) => (current === mode ? null : mode))
+    setOpenDocumentOptionsId(null)
+  }
+
+  async function refreshDocuments() {
+    setDocuments(await listMobileDocuments())
+  }
+
+  async function renameDocument(documentRecord: MobileDocumentRecord) {
+    const nextTitle = window.prompt('Rename document', documentRecord.document.title)?.trim()
+    if (!nextTitle || nextTitle === documentRecord.document.title) return
+    const updatedRecord = {
+      ...documentRecord,
+      document: { ...documentRecord.document, title: nextTitle, updatedAt: new Date().toISOString() }
+    }
+    await saveMobileDocument(updatedRecord)
+    if (record?.document.id === updatedRecord.document.id) {
+      setRecord(updatedRecord)
+      setStatus(`${nextTitle} renamed.`)
+    }
+    await refreshDocuments()
+  }
+
+  async function deleteDocument(documentRecord: MobileDocumentRecord) {
+    if (!window.confirm(`Delete "${documentRecord.document.title}" from this device?`)) return
+    await deleteMobileDocuments([documentRecord.document.id])
+    await refreshDocuments()
+    if (record?.document.id === documentRecord.document.id) router.push('/')
+  }
+
+  function copyText(value: string, label: string) {
+    void navigator.clipboard?.writeText(value).then(() => setStatus(`${label} copied.`)).catch(() => setStatus(`Could not copy ${label.toLowerCase()}.`))
+  }
+
+  function extractPage(pageNumber: number) {
+    if (!record) return
+    const payload = {
+      documentId: record.document.id,
+      title: record.document.title,
+      extractedPages: [pageNumber]
+    }
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${record.document.title.replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').toLowerCase() || 'document'}-page-${pageNumber}.json`
+    link.click()
+    URL.revokeObjectURL(url)
+    setStatus(`Page ${pageNumber} extracted.`)
+  }
+
+  function insertPageAfter(pageNumber: number) {
+    if (!record) return
+    const now = new Date().toISOString()
+    updateWorkspace((current) => ({
+      ...current,
+      pageEdits: [
+        ...(current.pageEdits ?? []),
+        { id: crypto.randomUUID(), documentId: record.document.id, pageNumber: pageNumber + 1, action: 'insert' }
+      ],
+      updatedAt: now
+    }))
+    setStatus(`Insert page queued after page ${pageNumber}.`)
+  }
+
+  function deletePage(pageNumber: number) {
+    if (!record) return
+    const now = new Date().toISOString()
+    updateWorkspace((current) => ({
+      ...current,
+      pageEdits: [
+        ...(current.pageEdits ?? []).filter((edit) => !(edit.documentId === record.document.id && edit.pageNumber === pageNumber && edit.action === 'delete')),
+        { id: crypto.randomUUID(), documentId: record.document.id, pageNumber, action: 'delete' }
+      ],
+      updatedAt: now
+    }))
+    setStatus(`Page ${pageNumber} marked deleted.`)
   }
 
   function updateTextbox(textbox: SourceTextbox) {
@@ -705,6 +1107,32 @@ export function DocumentViewer({ docId }: { docId: string }) {
 
   function deleteTextbox(textboxId: string) {
     updateWorkspace((current) => dispatchInteractionAction(current, { type: 'DELETE_SOURCE_TEXTBOX', textboxId }))
+  }
+
+  function deleteWorkspaceNode(nodeId: string) {
+    updateWorkspace((current) => {
+      const deletingNode = current.nodes.find((node) => node.id === nodeId)
+      const remainingNodes = current.nodes.filter((node) => node.id !== nodeId)
+      const sourceAnchorId = deletingNode?.sourceAnchorId
+      const shouldRemoveAnchor = Boolean(
+        sourceAnchorId &&
+        !remainingNodes.some((node) => node.sourceAnchorId === sourceAnchorId)
+      )
+      return {
+        ...current,
+        nodes: remainingNodes,
+        excerpts: shouldRemoveAnchor ? current.excerpts.filter((excerpt) => excerpt.anchorId !== sourceAnchorId) : current.excerpts,
+        anchors: shouldRemoveAnchor ? current.anchors.filter((anchor) => anchor.id !== sourceAnchorId) : current.anchors,
+        bookmarks: shouldRemoveAnchor ? current.bookmarks.filter((bookmark) => bookmark.sourceAnchorId !== sourceAnchorId) : current.bookmarks,
+        workspaceLinks: current.workspaceLinks.filter((link) => link.fromNodeId !== nodeId && link.toNodeId !== nodeId),
+        canvasEdges: current.canvasEdges.filter(
+          (edge) => edge.targetNodeId !== nodeId && (!shouldRemoveAnchor || edge.sourceAnchorId !== sourceAnchorId)
+        ),
+        activeAnchorId: shouldRemoveAnchor && current.activeAnchorId === sourceAnchorId ? null : current.activeAnchorId,
+        activeNodeId: current.activeNodeId === nodeId ? null : current.activeNodeId,
+        updatedAt: new Date().toISOString()
+      }
+    })
   }
 
   function changeSplit(clientX: number) {
@@ -828,8 +1256,8 @@ export function DocumentViewer({ docId }: { docId: string }) {
           <button className="mobile-tool-button" type="button" onClick={() => { setLeftPopup(null); setPanelMode('navigate') }}>Navigate</button>
         </div>
         <div className="mobile-viewer-command-group">
-          <button className={leftPopup === 'share' ? 'mobile-primary-button mobile-share-button is-active' : 'mobile-primary-button mobile-share-button'} type="button" onClick={() => { setPanelMode(null); setLeftPopup((current) => (current === 'share' ? null : 'share')) }}>Share</button>
-          <button className="mobile-tool-button" type="button" onClick={() => { setLeftPopup(null); setPanelMode('more') }}>
+          <button className={leftPopup === 'share' ? 'mobile-primary-button mobile-share-button is-active' : 'mobile-primary-button mobile-share-button'} type="button" onClick={() => openLeftPopup('share')}>Share</button>
+          <button className={panelMode === 'more' ? 'mobile-tool-button is-active' : 'mobile-tool-button'} type="button" onClick={() => { closeLeftPopup(); setPanelMode(panelMode === 'more' ? null : 'more') }}>
             <Icon name="more" /> More
           </button>
         </div>
@@ -839,109 +1267,103 @@ export function DocumentViewer({ docId }: { docId: string }) {
         <button className={paneMode === 'source' ? 'is-active' : ''} type="button" onClick={() => { setPaneMode('source'); updateWorkspace((current) => ({ ...current, activeNodeId: null, updatedAt: new Date().toISOString() })); }}>Source</button>
         <button className={paneMode === 'workspace' ? 'is-active' : ''} type="button" onClick={() => setPaneMode('workspace')}>Workspace</button>
       </div>
+      <div className="mobile-drawer-shortcuts" aria-label="Document drawer shortcuts">
+        <button className={leftPopup === 'documents' ? 'is-active' : ''} type="button" onClick={() => openLeftPopup('documents')}>Documents</button>
+        <button className={leftPopup === 'highlight-view' ? 'is-active' : ''} type="button" onClick={() => openLeftPopup('highlight-view')}>Highlights</button>
+        <button className={leftPopup === 'bookmarks' ? 'is-active' : ''} type="button" onClick={() => openLeftPopup('bookmarks')}>Bookmarks</button>
+      </div>
 
-      <section className="mobile-viewer-body" style={{ gridTemplateColumns }}>
+      <section ref={viewerBodyRef} className="mobile-viewer-body" style={{ gridTemplateColumns }}>
         {layoutMode !== 'mobile' ? (
           <SourceSidePanel
             activePanel={leftPopup}
             pageEditActive={panelMode === 'page-edit'}
             textboxActive={toolMode === 'textbox'}
-            popupTitle={leftPopup ? leftPopupTitle(leftPopup) : ''}
-            onPopupClose={() => setLeftPopup(null)}
-            onHighlightView={() => { setPanelMode(null); setLeftPopup((current) => (current === 'highlight-view' ? null : 'highlight-view')) }}
+            onHighlightView={() => openLeftPopup('highlight-view')}
             onTextbox={() => {
-              setToolMode('textbox')
+              setToolMode(toolMode === 'textbox' ? 'select' : 'textbox')
               setPanelMode(null)
-              setLeftPopup(null)
+              closeLeftPopup()
             }}
-            onPageEdit={() => { setLeftPopup(null); setPanelMode('page-edit') }}
-            onDocuments={() => { setPanelMode(null); setLeftPopup((current) => (current === 'documents' ? null : 'documents')) }}
-            onBookmarks={() => { setPanelMode(null); setLeftPopup((current) => (current === 'bookmarks' ? null : 'bookmarks')) }}
-            onPopupToggle={() => { setPanelMode(null); setLeftPopup((current) => (current ? null : 'documents')) }}
-          >
-              {leftPopup === 'highlight-view' ? (
-                <section className="mobile-settings-section">
-                  <h2>All source marks</h2>
-                  {sourceSelectionHighlights.length || (workspace.freeformHighlights ?? []).length || workspace.nodes.some((node) => node.documentId === record.document.id && (node.kind === 'excerpt' || node.kind === 'comment'))
-                    ? (
-                      <div className="mobile-source-list">
-                        {sourceSelectionHighlights.map((anchor) => (
-                          <button key={anchor.id} type="button" onClick={() => { focusAnchor(anchor.id); setLeftPopup(null) }}>
-                            <strong>Page {anchor.pageNumber}</strong>
-                            <span>{anchor.textQuote}</span>
-                          </button>
-                        ))}
-                        {(workspace.freeformHighlights ?? []).filter((entry) => entry.documentId === record.document.id).map((highlight) => (
-                          <button key={highlight.id} type="button" onClick={() => { scrollToPage(highlight.pageNumber ?? 1); setLeftPopup(null) }}>
-                            <strong>Page {highlight.pageNumber ?? 1}</strong>
-                            <span>Freeform highlight</span>
-                          </button>
-                        ))}
-                        {workspace.nodes.filter((node) => node.documentId === record.document.id && (node.kind === 'excerpt' || node.kind === 'comment')).map((node) => (
-                          <button key={node.id} type="button" onClick={() => { if (node.sourceAnchorId) focusAnchor(node.sourceAnchorId, node.id); setLeftPopup(null) }}>
-                            <strong>{node.kind === 'comment' ? 'Comment' : 'Excerpt'}</strong>
-                            <span>{node.text || node.title || 'Linked source note'}</span>
-                          </button>
-                        ))}
-                      </div>
-                    )
-                    : <p>No highlights yet.</p>}
-                </section>
-              ) : null}
-              {leftPopup === 'documents' ? (
-                <section className="mobile-settings-section">
-                  <h2>Project documents</h2>
-                  <div className="mobile-source-list">
-                    {documents.map((documentRecord) => (
-                      <button key={documentRecord.document.id} type="button" onClick={() => router.push(`/viewer/${documentRecord.document.id}`)}>
-                        <strong>{documentRecord.document.title}</strong>
-                        <span>{sourceKindLabel(getDocumentSourceKind(documentRecord))}</span>
-                      </button>
-                    ))}
-                  </div>
-                  <button className="mobile-primary-button" type="button" onClick={() => router.push('/')}>Add or import document</button>
-                </section>
-              ) : null}
-              {leftPopup === 'bookmarks' ? (
-                <section className="mobile-settings-section">
-                  <h2>Bookmarked sentences</h2>
-                  {workspace.bookmarks.filter((bookmark) => bookmark.documentId === record.document.id).length ? (
-                    <div className="mobile-source-list">
-                      {workspace.bookmarks.filter((bookmark) => bookmark.documentId === record.document.id).map((bookmark) => {
-                        const anchor = workspace.anchors.find((entry) => entry.id === bookmark.sourceAnchorId)
-                        return (
-                          <button key={bookmark.id} type="button" onClick={() => { if (anchor) focusAnchor(anchor.id); setLeftPopup(null) }}>
-                            <strong>{anchor ? `Page ${anchor.pageNumber}` : 'Bookmark'}</strong>
-                            <span>{anchor?.textQuote ?? bookmark.bookmarkLabel}</span>
-                          </button>
-                        )
-                      })}
-                    </div>
-                  ) : <p>No bookmarks yet. Select source text, then use Bookmark.</p>}
-                </section>
-              ) : null}
-              {leftPopup === 'share' ? (
-                <div className="mobile-left-popup-actions">
-                  <button className="mobile-primary-button" type="button" onClick={exportProjectBundle}>Export .ltproj</button>
-                  <button className="mobile-secondary-button" type="button" onClick={exportPrintablePdf}>Export PDF</button>
-                  <button className="mobile-secondary-button" type="button" disabled>DOCX Coming soon</button>
-                  <button className="mobile-secondary-button" type="button" disabled>Cloud share Coming soon</button>
-                  <button className="mobile-secondary-button" type="button" disabled>Auto-send Coming soon</button>
-                </div>
-              ) : null}
-          </SourceSidePanel>
+            onPageEdit={() => { closeLeftPopup(); setPanelMode('page-edit') }}
+            onDocuments={() => openLeftPopup('documents')}
+            onBookmarks={() => openLeftPopup('bookmarks')}
+            collapsed={leftPanelCollapsed}
+            onToggle={toggleLeftPanel}
+            onDocumentsClick={(buttonElement, tab) => {
+              setDocumentPopupAnchor(buttonElement)
+              setDocumentPopupTab(tab)
+              setPanelMode(null)
+              closeLeftPopup()
+            }}
+            documentPopupAnchor={documentPopupAnchor}
+            documentPopupTab={documentPopupTab}
+          />
         ) : null}
+        {documentPopupAnchor && record && workspace && (
+          <DocumentOutlinePopup
+            anchor={documentPopupAnchor}
+            initialTab={documentPopupTab}
+            records={documents}
+            activeDocumentId={record.document.id}
+            workspace={workspace}
+            sourceBookmarks={(workspace.sourceBookmarks ?? []).filter(
+              (b) => b.documentId === record.document.id
+            )}
+            currentDocumentTitle={record.document.title}
+            onClose={() => setDocumentPopupAnchor(null)}
+            onOpenDocument={(documentId) => {
+              setDocumentPopupAnchor(null)
+              router.push(`/viewer/${documentId}`)
+            }}
+            onFocusAnchor={(anchorId) => {
+              focusAnchor(anchorId)
+              setDocumentPopupAnchor(null)
+            }}
+            onScrollPage={(pageNumber) => {
+              scrollToPage(pageNumber)
+              setDocumentPopupAnchor(null)
+            }}
+            onAddDocument={() => {
+              setDocumentPopupAnchor(null)
+              router.push('/')
+            }}
+            onAddBookmark={() => {
+              const selection = window.getSelection()
+              if (selection && !selection.isCollapsed && selection.toString().trim()) {
+                captureSourceSelection()
+              } else {
+                window.alert('Select text in the source document to bookmark.')
+              }
+              setDocumentPopupAnchor(null)
+            }}
+          />
+        )}
         <section
           ref={sourcePaneRef}
           className={paneMode === 'source' ? 'mobile-pdf-pane is-active' : 'mobile-pdf-pane'}
           onScroll={handleSourceScroll}
           aria-label="Source document"
         >
+          <SourcePaneInkLayer documentId={record.document.id} workspace={workspace} />
           <div className="mobile-source-zoom-controls" aria-label="Source zoom">
             <button className="mobile-tool-button" type="button" onClick={() => setSourceZoom(viewerState.sourceZoom - ZOOM_STEP)}>-</button>
             <span>{Math.round(viewerState.sourceZoom * 100)}%</span>
             <button className="mobile-tool-button" type="button" onClick={() => setSourceZoom(viewerState.sourceZoom + ZOOM_STEP)}>+</button>
           </div>
+          {toolSettings && INK_TOOL_MODES.has(toolMode) ? (
+            <SourceInkToolbar
+              toolMode={toolMode}
+              settings={toolSettings}
+              pageNumber={viewerState.activePage}
+              canUndo={(workspace.historyPast ?? []).length > 0}
+              onToolMode={setToolMode}
+              onSettingsChange={updateToolSettings}
+              onUndo={() => updateWorkspace((current) => dispatchInteractionAction(current, { type: 'UNDO' }))}
+              onClearPage={clearCurrentPageInk}
+              onClose={() => setToolMode('select')}
+            />
+          ) : null}
           <div
             className={`mobile-source-interaction-surface tool-${toolMode}`}
             onPointerDown={handlePointerDown}
@@ -949,7 +1371,7 @@ export function DocumentViewer({ docId }: { docId: string }) {
             onPointerUp={handlePointerUp}
             onPointerCancel={() => {
               activeToolPageRef.current = null
-              setDraftPath(null)
+              updateDraftPath(null)
             }}
           >
             <div className="mobile-source-document-content">
@@ -959,17 +1381,26 @@ export function DocumentViewer({ docId }: { docId: string }) {
                   <SourceToolHitLayer pageNumber={1} />
                 </ReadableWebDocument>
               ) : pdfState ? (
-                pdfState.pages.map((page, index) => (
-                  <div key={index + 1} className="mobile-annotated-page" data-page-number={index + 1}>
-                    <PdfCanvasPage page={page} pageNumber={index + 1} zoom={effectiveSourceZoom} />
-                    <AnnotationLayer documentId={record.document.id} pageNumber={index + 1} sourceZoom={effectiveSourceZoom} workspace={workspace} selectionHighlights={sourceSelectionHighlights} linkedAnchors={linkedSourceAnchors} draftPath={draftPath} onTextboxChange={updateTextbox} onTextboxDelete={deleteTextbox} onAnchorPopup={openAnchorPopup} />
-                    <SourceToolHitLayer pageNumber={index + 1} />
-                  </div>
-                ))
+                pdfState.pages.map((page, index) => {
+                  const pageNumber = index + 1
+                  if (pageEditDeletedPages.has(pageNumber)) return null
+                  const rotation = getPageRotation(viewerState, pageNumber)
+                  return (
+                    <div key={pageNumber} className="mobile-annotated-page" data-page-number={pageNumber}>
+                      <PdfCanvasPage page={page} pageNumber={pageNumber} zoom={effectiveSourceZoom} rotation={rotation} />
+                      <SelectedTextHighlightLayer documentId={record.document.id} pageNumber={pageNumber} sourceZoom={effectiveSourceZoom} workspace={workspace} selectionHighlights={sourceSelectionHighlights} onAnchorPopup={openAnchorPopup} />
+                      <SourceInkLayer documentId={record.document.id} pageNumber={pageNumber} workspace={workspace} draftPath={draftPath} />
+                      <SourceToolHitLayer pageNumber={pageNumber} />
+                      <SourceTextboxLayer documentId={record.document.id} pageNumber={pageNumber} workspace={workspace} onTextboxChange={updateTextbox} onTextboxDelete={deleteTextbox} />
+                      <SourceMarkerLayer documentId={record.document.id} pageNumber={pageNumber} sourceZoom={effectiveSourceZoom} workspace={workspace} selectionHighlights={sourceSelectionHighlights} linkedAnchors={linkedSourceAnchors} onAnchorPopup={openAnchorPopup} />
+                    </div>
+                  )
+                })
               ) : (
                 <div className="mobile-loading-panel">No visual PDF bytes found for this document.</div>
               )}
             </div>
+            {sourceMagnifier && !selectionPopup ? <SourceSelectionMagnifierLens magnifier={sourceMagnifier} /> : null}
             {sourceKind !== 'web-clean' && record && workspace ? (
               <SelectionManager
                 rootRef={sourcePaneRef}
@@ -1043,6 +1474,20 @@ export function DocumentViewer({ docId }: { docId: string }) {
             activeNodeId={workspace.activeNodeId}
             linkLayoutKey={linkLayoutKey}
             locked={workspace.viewerLayout.workspaceLocked}
+            toolMode={toolMode}
+            toolSettings={toolSettings}
+            inkStrokes={workspace.inkStrokes}
+            freeformHighlights={workspace.freeformHighlights}
+            onWorkspaceInkStroke={(payload) => updateWorkspace((current) => dispatchInteractionAction(current, { type: 'ADD_INK_STROKE', payload }))}
+            onWorkspaceFreeformHighlight={(payload) => updateWorkspace((current) => dispatchInteractionAction(current, { type: 'ADD_FREEFORM_HIGHLIGHT', payload }))}
+            onWorkspaceEraseInk={(point, size) =>
+              updateWorkspace((current) =>
+                dispatchInteractionAction(current, {
+                  type: 'ERASE_WORKSPACE_INK_AT_POINT',
+                  payload: { documentId: record.document.id, point, size }
+                })
+              )
+            }
             onNodesChange={(nodes: CanvasNode[]) =>
               updateWorkspace((current) => ({
                 ...current,
@@ -1059,16 +1504,7 @@ export function DocumentViewer({ docId }: { docId: string }) {
               }))
             }
             onLinksChange={(workspaceLinks) => updateWorkspace((current) => ({ ...current, workspaceLinks, updatedAt: new Date().toISOString() }))}
-            onDeleteNode={(nodeId) =>
-              updateWorkspace((current) => ({
-                ...current,
-                nodes: current.nodes.filter((node) => node.id !== nodeId),
-                workspaceLinks: current.workspaceLinks.filter((link) => link.fromNodeId !== nodeId && link.toNodeId !== nodeId),
-                canvasEdges: current.canvasEdges.filter((edge) => edge.targetNodeId !== nodeId),
-                activeNodeId: current.activeNodeId === nodeId ? null : current.activeNodeId,
-                updatedAt: new Date().toISOString()
-              }))
-            }
+            onDeleteNode={deleteWorkspaceNode}
             onViewportChange={(workspaceViewport) =>
               updateWorkspace((current) => ({
                 ...current,
@@ -1091,7 +1527,51 @@ export function DocumentViewer({ docId }: { docId: string }) {
             onCreateNode={createFreeNode}
           />
         </section>
+        {toolSettings && INK_TOOL_MODES.has(toolMode) ? (
+          <GlobalInkCaptureLayer
+            toolMode={toolMode}
+            settings={toolSettings}
+            bodyRef={viewerBodyRef}
+            onRoutePoint={routeGlobalInkPoint}
+            onErase={eraseGlobalInkAt}
+            onCommit={commitGlobalInkDraft}
+            onWheelScroll={scrollGlobalInkSurface}
+          />
+        ) : null}
       </section>
+
+      {leftPopup ? (
+        <LeftDrawer
+          mode={leftPopup}
+          title={leftPopupTitle(leftPopup)}
+          record={record}
+          documents={filteredDocuments}
+          workspace={workspace}
+          activeDocumentId={record.document.id}
+          documentFilter={documentFilter}
+          highlightFilter={highlightFilter}
+          highlights={filteredHighlights}
+          sourceBookmarks={(workspace.sourceBookmarks ?? []).filter((bookmark) => bookmark.documentId === record.document.id)}
+          openDocumentOptionsId={openDocumentOptionsId}
+          onDocumentFilter={setDocumentFilter}
+          onHighlightFilter={setHighlightFilter}
+          onClose={closeLeftPopup}
+          onOpenLibrary={() => router.push('/')}
+          onImportMore={() => router.push('/')}
+          onOpenDocument={(documentId) => { closeLeftPopup(); router.push(`/viewer/${documentId}`) }}
+          onDocumentOptions={(documentId) => setOpenDocumentOptionsId((current) => (current === documentId ? null : documentId))}
+          onRenameDocument={(documentRecord) => { void renameDocument(documentRecord) }}
+          onDeleteDocument={(documentRecord) => { void deleteDocument(documentRecord) }}
+          onCopyText={copyText}
+          onFocusAnchor={(anchorId) => { focusAnchor(anchorId); closeLeftPopup() }}
+          onScrollPage={(pageNumber) => { scrollToPage(pageNumber); closeLeftPopup() }}
+          onExportBundle={exportProjectBundle}
+          onExportPrintable={exportPrintablePdf}
+          onResetSplit={() => {
+            updateWorkspace((current) => ({ ...current, viewerLayout: { ...current.viewerLayout, splitRatio: resetSplitRatio() }, updatedAt: new Date().toISOString() }))
+          }}
+        />
+      ) : null}
 
       <footer className="mobile-viewer-footer">
         Page {viewerState.activePage} of {Math.max(record.document.pageCount, pdfState?.pages.length ?? 1)} · {sourceKindLabel(sourceKind)}
@@ -1117,20 +1597,37 @@ export function DocumentViewer({ docId }: { docId: string }) {
         />
       ) : null}
 
-      {panelMode === 'page-edit' ? (
+      {panelMode === 'page-edit' && pdfState ? (
         <Modal title="Edit Pages" onClose={() => setPanelMode(null)}>
-          <section className="mobile-settings-section">
-            <h2>Pages</h2>
-            <div className="mobile-source-list">
-              {Array.from({ length: Math.max(record.document.pageCount, pdfState?.pages.length ?? 1) }, (_, index) => (
-                <button key={index + 1} type="button" onClick={() => { scrollToPage(index + 1); setPanelMode(null) }}>
-                  <strong>Page {index + 1}</strong>
-                  <span>Open page</span>
-                </button>
-              ))}
-            </div>
-            <p>Insert, delete, rotate, and reorder are disabled in mobile V1.</p>
-          </section>
+          <PageEditPanel
+            pageCount={pdfState.pages.length}
+            currentPage={viewerState.activePage}
+            deletedPages={pageEditDeletedPages}
+            rotations={viewerState.pageRotations ?? {}}
+            onGoToPage={(pageNumber) => {
+              scrollToPage(pageNumber)
+              setPanelMode(null)
+            }}
+            onRotateCurrent={(degrees, pageNumber) => {
+              const currentRotation = getPageRotation(viewerState, pageNumber)
+              commitViewerState({
+                pageRotations: {
+                  ...(viewerState.pageRotations ?? {}),
+                  [pageNumber]: (currentRotation + degrees + 360) % 360
+                }
+              })
+            }}
+            onRotateAll={(degrees) => {
+              const pageRotations: Record<number, number> = {}
+              for (let pageNumber = 1; pageNumber <= pdfState.pages.length; pageNumber += 1) {
+                pageRotations[pageNumber] = (getPageRotation(viewerState, pageNumber) + degrees + 360) % 360
+              }
+              commitViewerState({ pageRotations })
+            }}
+            onInsertPage={(pageNumber) => insertPageAfter(pageNumber)}
+            onDeletePage={(pageNumber) => deletePage(pageNumber)}
+            onExtractPage={(pageNumber) => extractPage(pageNumber)}
+          />
         </Modal>
       ) : null}
 
@@ -1151,83 +1648,13 @@ export function DocumentViewer({ docId }: { docId: string }) {
       ) : null}
 
       {panelMode === 'more' ? (
-        <Modal title="More" onClose={() => setPanelMode(null)}>
-          <section className="mobile-settings-section">
-            <h2>Project</h2>
-            <p>{record.document.title}</p>
-          </section>
-          <section className="mobile-settings-section">
-            <h2>Syncing</h2>
-            <label className="mobile-toggle-row">
-              <input
-                type="checkbox"
-                checked={workspace.settings.syncEnabled}
-                disabled
-                onChange={() => undefined}
-              />
-              Sync backend unavailable
-            </label>
-          </section>
-          <section className="mobile-settings-section">
-            <h2>Display</h2>
-            <label>Density
-              <select
-                value={workspace.settings.displayDensity}
-                onChange={(event) =>
-                  updateWorkspace((current) => ({
-                    ...current,
-                    settings: { ...current.settings, displayDensity: event.target.value as 'comfortable' | 'compact' },
-                    updatedAt: new Date().toISOString()
-                  }))
-                }
-              >
-                <option value="comfortable">Comfortable</option>
-                <option value="compact">Compact</option>
-              </select>
-            </label>
-            <label className="mobile-toggle-row">
-              <input
-                type="checkbox"
-                checked={workspace.viewerLayout.sourceToolsOpen}
-                onChange={(event) =>
-                  updateWorkspace((current) => ({
-                    ...current,
-                    viewerLayout: { ...current.viewerLayout, sourceToolsOpen: event.target.checked },
-                    updatedAt: new Date().toISOString()
-                  }))
-                }
-              />
-              Keep source tools open
-            </label>
-            <label className="mobile-toggle-row">
-              <input
-                type="checkbox"
-                checked={workspace.viewerLayout.workspaceLocked}
-                onChange={(event) =>
-                  updateWorkspace((current) => ({
-                    ...current,
-                    viewerLayout: { ...current.viewerLayout, workspaceLocked: event.target.checked },
-                    updatedAt: new Date().toISOString()
-                  }))
-                }
-              />
-              Lock workspace
-            </label>
-            <label className="mobile-toggle-row">
-              <input
-                type="checkbox"
-                checked={workspace.viewerLayout.autoPositionComments}
-                onChange={(event) =>
-                  updateWorkspace((current) => ({
-                    ...current,
-                    viewerLayout: { ...current.viewerLayout, autoPositionComments: event.target.checked },
-                    updatedAt: new Date().toISOString()
-                  }))
-                }
-              />
-              Auto-position comments
-            </label>
-          </section>
+        <Modal title="Settings" onClose={() => setPanelMode(null)}>
+          <MoreSettingsPanel
+            workspace={workspace}
+            onUpdateWorkspace={updateWorkspace}
+            record={record}
+            onClose={() => setPanelMode(null)}
+          />
         </Modal>
       ) : null}
     </main>
@@ -1282,29 +1709,91 @@ function SourceSidePanel({
   activePanel,
   pageEditActive,
   textboxActive,
-  popupTitle,
-  onPopupClose,
   onHighlightView,
   onTextbox,
   onPageEdit,
   onDocuments,
   onBookmarks,
-  onPopupToggle,
-  children
+  collapsed = false,
+  onToggle,
+  onDocumentsClick,
+  documentPopupAnchor,
+  documentPopupTab
 }: {
   activePanel: LeftPopupMode
   pageEditActive: boolean
   textboxActive: boolean
-  popupTitle: string
-  onPopupClose: () => void
   onHighlightView: () => void
   onTextbox: () => void
   onPageEdit: () => void
   onDocuments: () => void
   onBookmarks: () => void
-  onPopupToggle: () => void
-  children: React.ReactNode
+  collapsed?: boolean
+  onToggle?: () => void
+  onDocumentsClick: (button: HTMLButtonElement, tab: 'documents' | 'outline') => void
+  documentPopupAnchor: HTMLElement | null
+  documentPopupTab: 'documents' | 'outline'
 }) {
+  const documentsButtonRef = useRef<HTMLButtonElement>(null)
+  const bookmarksButtonRef = useRef<HTMLButtonElement>(null)
+
+  if (collapsed) {
+    return (
+      <aside className="mobile-viewer-side-panel mobile-viewer-side-panel-collapsed">
+        <button className={activePanel === 'highlight-view' ? 'is-active' : ''} type="button" title="Highlight View - see all highlights together" aria-label="Highlight View" onClick={onHighlightView}>
+          <Icon name="highlightView" />
+        </button>
+        <button className={textboxActive ? 'is-active' : ''} type="button" title="Insert textbox in document" aria-label="Insert Textbox" onClick={onTextbox}>
+          <Icon name="textbox" />
+        </button>
+        <button className={pageEditActive ? 'is-active' : ''} type="button" title="Edit pages in this document" aria-label="Edit Pages" onClick={onPageEdit}>
+          <Icon name="editPages" />
+        </button>
+        <button
+          ref={documentsButtonRef}
+          className={documentPopupAnchor && documentPopupTab === 'documents' ? 'is-active' : (activePanel === 'documents' ? 'is-active' : '')}
+          type="button"
+          title="See document list or add new document"
+          aria-label="Documents"
+          onClick={() => {
+            if (documentsButtonRef.current) {
+              onDocumentsClick(documentsButtonRef.current, 'documents')
+            } else {
+              onDocuments()
+            }
+          }}
+        >
+          <Icon name="docs" />
+        </button>
+        <button
+          ref={bookmarksButtonRef}
+          className={documentPopupAnchor && documentPopupTab === 'outline' ? 'is-active' : (activePanel === 'bookmarks' ? 'is-active' : '')}
+          type="button"
+          title="See outlines and bookmarked sentences"
+          aria-label="Outlines / Bookmarks"
+          onClick={() => {
+            if (bookmarksButtonRef.current) {
+              onDocumentsClick(bookmarksButtonRef.current, 'outline')
+            } else {
+              onBookmarks()
+            }
+          }}
+        >
+          <Icon name="bookmark" />
+        </button>
+        <button
+          className="mobile-viewer-rail-toggle mobile-viewer-rail-toggle-expand"
+          type="button"
+          onClick={onToggle}
+          aria-label="Expand left sidebar"
+          title="Expand sidebar"
+        >
+          ›
+        </button>
+      </aside>
+    )
+  }
+
   return (
     <aside className="mobile-viewer-side-panel" aria-label="Source actions">
       <button className={activePanel === 'highlight-view' ? 'is-active' : ''} type="button" title="Highlight View - see all highlights together" aria-label="Highlight View" onClick={onHighlightView}>
@@ -1319,32 +1808,50 @@ function SourceSidePanel({
         <Icon name="editPages" />
         <span>Edit Pages</span>
       </button>
-      <button className={activePanel === 'documents' ? 'is-active' : ''} type="button" title="See document list or add new document" aria-label="Documents" onClick={onDocuments}>
+      <button
+        ref={documentsButtonRef}
+        className={documentPopupAnchor && documentPopupTab === 'documents' ? 'is-active' : (activePanel === 'documents' ? 'is-active' : '')}
+        type="button"
+        title="See document list or add new document"
+        aria-label="Documents"
+        onClick={() => {
+          if (documentsButtonRef.current) {
+            onDocumentsClick(documentsButtonRef.current, 'documents')
+          } else {
+            onDocuments()
+          }
+        }}
+      >
         <Icon name="docs" />
         <span>Documents</span>
       </button>
-      <button className={activePanel === 'bookmarks' ? 'is-active' : ''} type="button" title="See outlines and bookmarked sentences" aria-label="Outlines / Bookmarks" onClick={onBookmarks}>
+      <button
+        ref={bookmarksButtonRef}
+        className={documentPopupAnchor && documentPopupTab === 'outline' ? 'is-active' : (activePanel === 'bookmarks' ? 'is-active' : '')}
+        type="button"
+        title="See outlines and bookmarked sentences"
+        aria-label="Outlines / Bookmarks"
+        onClick={() => {
+          if (bookmarksButtonRef.current) {
+            onDocumentsClick(bookmarksButtonRef.current, 'outline')
+          } else {
+            onBookmarks()
+          }
+        }}
+      >
         <Icon name="bookmark" />
         <span>Bookmarks</span>
       </button>
+
       <button
-        className={activePanel ? 'mobile-left-popup-toggle is-active' : 'mobile-left-popup-toggle'}
+        className="mobile-viewer-rail-toggle"
         type="button"
-        title={activePanel ? 'Close left popup' : 'Open left popup'}
-        aria-label={activePanel ? 'Close left popup' : 'Open left popup'}
-        aria-expanded={Boolean(activePanel)}
-        onClick={onPopupToggle}
+        onClick={onToggle}
+        aria-label="Collapse left sidebar"
+        title="Collapse sidebar"
       >
-        {activePanel ? '‹' : '›'}
-        <span>Popup</span>
+        ‹
       </button>
-      <section className={`mobile-left-popup-panel${activePanel ? ' is-open' : ' is-hidden'}`} aria-label="Source context panel" aria-hidden={!activePanel}>
-        <header>
-          <h2>{popupTitle}</h2>
-          <button className="mobile-modal-close" type="button" aria-label="Close" onClick={onPopupClose}>×</button>
-        </header>
-        <div className="mobile-left-popup-body">{children}</div>
-      </section>
     </aside>
   )
 }
@@ -1353,7 +1860,394 @@ function leftPopupTitle(mode: Exclude<LeftPopupMode, null>) {
   if (mode === 'highlight-view') return 'Highlight View'
   if (mode === 'documents') return 'Documents'
   if (mode === 'bookmarks') return 'Outlines / Bookmarks'
+  if (mode === 'more') return 'More Options'
   return 'Share'
+}
+
+function LeftDrawer({
+  mode,
+  title,
+  record,
+  documents,
+  workspace,
+  activeDocumentId,
+  documentFilter,
+  highlightFilter,
+  highlights,
+  sourceBookmarks,
+  openDocumentOptionsId,
+  onDocumentFilter,
+  onHighlightFilter,
+  onClose,
+  onOpenLibrary,
+  onImportMore,
+  onOpenDocument,
+  onDocumentOptions,
+  onRenameDocument,
+  onDeleteDocument,
+  onCopyText,
+  onFocusAnchor,
+  onScrollPage,
+  onExportBundle,
+  onExportPrintable,
+  onResetSplit
+}: {
+  mode: Exclude<LeftPopupMode, null>
+  title: string
+  record: MobileDocumentRecord
+  documents: MobileDocumentRecord[]
+  workspace: MobileWorkspaceState
+  activeDocumentId: string
+  documentFilter: string
+  highlightFilter: string
+  highlights: PageAnchor[]
+  sourceBookmarks: Array<{ id: string; label: string; pageNumber?: number }>
+  openDocumentOptionsId: string | null
+  onDocumentFilter: (value: string) => void
+  onHighlightFilter: (value: string) => void
+  onClose: () => void
+  onOpenLibrary: () => void
+  onImportMore: () => void
+  onOpenDocument: (documentId: string) => void
+  onDocumentOptions: (documentId: string) => void
+  onRenameDocument: (documentRecord: MobileDocumentRecord) => void
+  onDeleteDocument: (documentRecord: MobileDocumentRecord) => void
+  onCopyText: (value: string, label: string) => void
+  onFocusAnchor: (anchorId: string) => void
+  onScrollPage: (pageNumber: number) => void
+  onExportBundle: () => void
+  onExportPrintable: () => void
+  onResetSplit: () => void
+}) {
+  const currentBookmarks = workspace.bookmarks.filter((bookmark) => bookmark.documentId === activeDocumentId)
+  const pageCount = Math.max(record.document.pageCount ?? 0, 1)
+  return (
+    <>
+      <button className="mobile-left-popup-backdrop" type="button" aria-label="Close left drawer" onClick={onClose} />
+      <aside className="mobile-left-popup" aria-label={title}>
+        <header className="mobile-left-popup-header">
+          <div>
+            <span>{sourceKindLabel(getDocumentSourceKind(record))}</span>
+            <h2>{title}</h2>
+          </div>
+          <button className="mobile-modal-close" type="button" aria-label="Close" onClick={onClose}>×</button>
+        </header>
+
+        <div className="mobile-left-popup-body">
+          {mode === 'documents' ? (
+            <>
+              <input className="mobile-left-popup-search" value={documentFilter} onChange={(event) => onDocumentFilter(event.target.value)} placeholder="Search documents" aria-label="Search documents" />
+              <div className="mobile-left-popup-actions">
+                <button className="mobile-secondary-button" type="button" onClick={onOpenLibrary}>Open Library</button>
+                <button className="mobile-primary-button" type="button" onClick={onImportMore}>Import More</button>
+              </div>
+              <div className="mobile-left-popup-list">
+                {documents.length ? documents.map((documentRecord) => (
+                  <article key={documentRecord.document.id} className={documentRecord.document.id === activeDocumentId ? 'mobile-left-popup-item is-active' : 'mobile-left-popup-item'}>
+                    <button type="button" onClick={() => onOpenDocument(documentRecord.document.id)}>
+                      <strong>{documentRecord.document.title}</strong>
+                      <span>{sourceKindLabel(getDocumentSourceKind(documentRecord))} · {documentRecord.document.pageCount || 1} pages</span>
+                      <small>{documentRecord.lastOpenedAt ?? documentRecord.document.updatedAt ?? 'No date'}</small>
+                    </button>
+                    <button className="mobile-left-popup-options-button" type="button" aria-label={`Options for ${documentRecord.document.title}`} onClick={() => onDocumentOptions(documentRecord.document.id)}>•••</button>
+                    {openDocumentOptionsId === documentRecord.document.id ? (
+                      <div className="mobile-left-popup-options">
+                        <button type="button" onClick={() => onOpenDocument(documentRecord.document.id)}>Open</button>
+                        <button type="button" onClick={() => onRenameDocument(documentRecord)}>Rename</button>
+                        <button type="button" disabled title="Coming soon">Duplicate metadata</button>
+                        <button type="button" onClick={() => onDeleteDocument(documentRecord)}>Delete</button>
+                        <button type="button" onClick={() => onCopyText(documentRecord.document.title, 'Title')}>Copy title</button>
+                        <button type="button" onClick={() => onCopyText(documentRecord.document.id, 'Document id')}>Copy id</button>
+                      </div>
+                    ) : null}
+                  </article>
+                )) : <p className="mobile-left-popup-empty">No documents found.</p>}
+              </div>
+            </>
+          ) : null}
+
+          {mode === 'bookmarks' ? (
+            <div className="mobile-left-popup-list">
+              {currentBookmarks.map((bookmark) => {
+                const anchor = workspace.anchors.find((entry) => entry.id === bookmark.sourceAnchorId)
+                return (
+                  <button key={bookmark.id} className="mobile-left-popup-item" type="button" onClick={() => { if (anchor) onFocusAnchor(anchor.id) }}>
+                    <strong>{anchor ? `Page ${anchor.pageNumber}` : 'Bookmark'}</strong>
+                    <span>{anchor?.textQuote ?? bookmark.bookmarkLabel}</span>
+                  </button>
+                )
+              })}
+              {sourceBookmarks.map((bookmark) => (
+                <button key={bookmark.id} className="mobile-left-popup-item" type="button" onClick={() => onScrollPage(bookmark.pageNumber ?? 1)}>
+                  <strong>Page {bookmark.pageNumber ?? 1}</strong>
+                  <span>{bookmark.label}</span>
+                </button>
+              ))}
+              {!currentBookmarks.length && !sourceBookmarks.length ? <p className="mobile-left-popup-empty">No bookmarks yet.</p> : null}
+            </div>
+          ) : null}
+
+          {mode === 'highlight-view' ? (
+            <>
+              <input className="mobile-left-popup-search" value={highlightFilter} onChange={(event) => onHighlightFilter(event.target.value)} placeholder="Search highlights or tags" aria-label="Search highlights" />
+              <div className="mobile-left-popup-list">
+                {highlights.map((anchor) => (
+                  <button key={anchor.id} className="mobile-left-popup-item" type="button" onClick={() => onFocusAnchor(anchor.id)}>
+                    <strong><span className="mobile-left-popup-color-dot" style={{ background: anchor.selectionColor ?? '#5d5df6' }} /> Page {anchor.pageNumber}</strong>
+                    <span>{anchor.textQuote}</span>
+                    {(anchor.tags ?? []).length ? <small>{anchor.tags?.map((tag) => `#${tag}`).join(' ')}</small> : null}
+                  </button>
+                ))}
+                {!highlights.length ? <p className="mobile-left-popup-empty">No highlights yet.</p> : null}
+              </div>
+            </>
+          ) : null}
+
+          {mode === 'share' ? (
+            <div className="mobile-left-popup-actions is-column">
+              <button className="mobile-primary-button" type="button" onClick={onExportBundle}>Export Project Bundle</button>
+              <p>Downloads a JSON project bundle with document and workspace data.</p>
+              <button className="mobile-secondary-button" type="button" onClick={onExportPrintable}>Printable Export</button>
+              <p>Opens a printable view of excerpts, notes, and source marks.</p>
+            </div>
+          ) : null}
+
+          {mode === 'more' ? (
+            <div className="mobile-left-popup-list">
+              <section className="mobile-left-popup-item">
+                <strong>{record.document.title}</strong>
+                <span>ID: {record.document.id}</span>
+                <span>{sourceKindLabel(getDocumentSourceKind(record))} · {pageCount} pages</span>
+              </section>
+              <div className="mobile-left-popup-actions is-column">
+                <button className="mobile-secondary-button" type="button" onClick={() => onCopyText(record.document.id, 'Document id')}>Copy document id</button>
+                <button className="mobile-secondary-button" type="button" onClick={() => onCopyText(record.document.title, 'Title')}>Copy title</button>
+                <button className="mobile-secondary-button" type="button" onClick={onResetSplit}>Reset split layout</button>
+                <button className="mobile-secondary-button" type="button" onClick={onClose}>Close panel</button>
+                <button className="mobile-secondary-button" type="button" disabled>Cloud sync Coming soon</button>
+                <button className="mobile-secondary-button" type="button" disabled>Version history Coming soon</button>
+                <button className="mobile-secondary-button" type="button" disabled>Offline folder export Coming soon</button>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </aside>
+    </>
+  )
+}
+
+function DocumentOutlinePopup({
+  anchor,
+  initialTab = 'documents',
+  records,
+  activeDocumentId,
+  workspace,
+  sourceBookmarks,
+  currentDocumentTitle,
+  onClose,
+  onOpenDocument,
+  onFocusAnchor,
+  onScrollPage,
+  onAddDocument,
+  onAddBookmark
+}: {
+  anchor: HTMLElement
+  initialTab?: 'documents' | 'outline'
+  records: MobileDocumentRecord[]
+  activeDocumentId: string
+  workspace: MobileWorkspaceState
+  sourceBookmarks: Array<{ id: string; label: string; pageNumber?: number }>
+  currentDocumentTitle: string
+  onClose: () => void
+  onOpenDocument: (documentId: string) => void
+  onFocusAnchor: (anchorId: string) => void
+  onScrollPage: (pageNumber: number) => void
+  onAddDocument: () => void
+  onAddBookmark: () => void
+}) {
+  const [activeTab, setActiveTab] = useState<'documents' | 'outline'>(initialTab)
+  const [documentFilter, setDocumentFilter] = useState('')
+  const [outlineFilter, setOutlineFilter] = useState('')
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc')
+  const popupRef = useRef<HTMLDivElement>(null)
+
+  const rect = anchor.getBoundingClientRect()
+  const viewportWidth = typeof window === 'undefined' ? 390 : window.innerWidth
+  const popupWidth = Math.min(360, Math.max(260, viewportWidth - 32))
+  const popupLeft = Math.max(12, Math.min(rect.left, viewportWidth - popupWidth - 12))
+  const arrowLeft = Math.max(18, Math.min(rect.left + rect.width / 2 - popupLeft, popupWidth - 18))
+  const style: React.CSSProperties = {
+    position: 'fixed',
+    left: popupLeft,
+    top: rect.bottom + 4,
+    zIndex: 1000,
+    width: popupWidth,
+  }
+
+  useEffect(() => {
+    setActiveTab(initialTab)
+  }, [initialTab])
+
+  useEffect(() => {
+    const handleClick = (e: MouseEvent) => {
+      if (popupRef.current && !popupRef.current.contains(e.target as Node)) {
+        onClose()
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [onClose])
+
+  const filterLower = documentFilter.toLowerCase()
+  const filteredDocuments = records
+    .filter((record) => record.document.title.toLowerCase().includes(filterLower))
+    .sort((a, b) => {
+      const titleA = a.document.title.toLowerCase()
+      const titleB = b.document.title.toLowerCase()
+      return sortOrder === 'asc' ? titleA.localeCompare(titleB) : titleB.localeCompare(titleA)
+    })
+
+  const outlineFilterLower = outlineFilter.toLowerCase()
+  const workspaceBookmarks = workspace.bookmarks.filter(
+    (b) => b.documentId === activeDocumentId
+  )
+  const filteredOutlineItems = [
+    ...workspaceBookmarks.map((bookmark) => {
+      const anchor = workspace.anchors.find((a) => a.id === bookmark.sourceAnchorId)
+      return {
+        id: bookmark.id,
+        type: 'bookmark' as const,
+        pageNumber: anchor?.pageNumber,
+        label: anchor?.textQuote ?? bookmark.bookmarkLabel,
+        anchorId: anchor?.id,
+      }
+    }),
+    ...sourceBookmarks.map((bookmark) => ({
+      id: bookmark.id,
+      type: 'source' as const,
+      pageNumber: bookmark.pageNumber ?? 1,
+      label: bookmark.label,
+      anchorId: undefined,
+    })),
+  ].filter(
+    (item) =>
+      !outlineFilterLower ||
+      item.label.toLowerCase().includes(outlineFilterLower) ||
+      `page ${item.pageNumber}`.includes(outlineFilterLower)
+  )
+
+  return (
+    <div ref={popupRef} className="mobile-document-outline-popup" style={style}>
+      <div className="mobile-popup-arrow" style={{ left: arrowLeft }} />
+      <div className="mobile-popup-doc-title">
+        <span className="mobile-popup-doc-title-label">Current document</span>
+        <strong>{currentDocumentTitle}</strong>
+      </div>
+
+      <div className="mobile-popup-tabs">
+        <button
+          className={activeTab === 'documents' ? 'is-active' : ''}
+          onClick={() => setActiveTab('documents')}
+        >
+          Documents
+        </button>
+        <button
+          className={activeTab === 'outline' ? 'is-active' : ''}
+          onClick={() => setActiveTab('outline')}
+        >
+          Outline
+        </button>
+        <button className="mobile-popup-close" onClick={onClose}>×</button>
+      </div>
+
+      {activeTab === 'documents' ? (
+        <div className="mobile-popup-documents">
+          <div className="mobile-popup-action-bar">
+            <button className="mobile-secondary-button" type="button" onClick={onAddDocument}>
+              Add Document
+            </button>
+            <div className="mobile-popup-search-sort">
+              <input
+                type="text"
+                placeholder="Filter Documents"
+                value={documentFilter}
+                onChange={(e) => setDocumentFilter(e.target.value)}
+                autoFocus
+              />
+              <button
+                className="mobile-popup-sort-btn"
+                type="button"
+                onClick={() => setSortOrder((current) => (current === 'asc' ? 'desc' : 'asc'))}
+                title={sortOrder === 'asc' ? 'Sort A-Z' : 'Sort Z-A'}
+                aria-label={sortOrder === 'asc' ? 'Sort documents A to Z' : 'Sort documents Z to A'}
+              >
+                {sortOrder === 'asc' ? '↓' : '↑'}
+              </button>
+            </div>
+          </div>
+          <div className="mobile-popup-list">
+            {filteredDocuments.length === 0 && (
+              <div className="mobile-popup-empty">No documents match</div>
+            )}
+            {filteredDocuments.map((record) => (
+              <button
+                key={record.document.id}
+                className={record.document.id === activeDocumentId ? 'is-active' : ''}
+                onClick={() => {
+                  onOpenDocument(record.document.id)
+                  onClose()
+                }}
+              >
+                <strong>{record.document.title}</strong>
+                <span>
+                  {sourceKindLabel(getDocumentSourceKind(record))} ·{' '}
+                  {record.document.pageCount || 1} pages
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div className="mobile-popup-outline">
+          <div className="mobile-popup-action-bar">
+            <button className="mobile-secondary-button" type="button" onClick={onAddBookmark}>
+              Add Bookmark
+            </button>
+          </div>
+          <div className="mobile-popup-search-wrap">
+            <input
+              type="text"
+              placeholder="Filter Outline"
+              value={outlineFilter}
+              onChange={(e) => setOutlineFilter(e.target.value)}
+              autoFocus
+            />
+          </div>
+          <div className="mobile-popup-list">
+            {filteredOutlineItems.length === 0 && (
+              <div className="mobile-popup-empty">No bookmarks match filter</div>
+            )}
+            {filteredOutlineItems.map((item) => (
+              <button
+                key={item.id}
+                onClick={() => {
+                  if (item.type === 'bookmark' && item.anchorId) {
+                    onFocusAnchor(item.anchorId)
+                  } else if (item.type === 'source') {
+                    onScrollPage(item.pageNumber!)
+                  }
+                  onClose()
+                }}
+              >
+                <strong>Page {item.pageNumber ?? '?'}</strong>
+                <span>{item.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
 }
 
 function AnnotationLayer({
@@ -1361,9 +2255,9 @@ function AnnotationLayer({
   pageNumber,
   sourceZoom,
   workspace,
-      selectionHighlights,
-      linkedAnchors,
-      draftPath,
+  selectionHighlights,
+  linkedAnchors,
+  draftPath,
   onTextboxChange,
   onTextboxDelete,
   onAnchorPopup
@@ -1379,41 +2273,739 @@ function AnnotationLayer({
   onTextboxDelete: (textboxId: string) => void
   onAnchorPopup: (anchor: PageAnchor) => void
 }) {
-  const pageSelectionHighlights = selectionHighlights.filter((entry) => entry.pageNumber === pageNumber)
-  const pageLinkedAnchors = linkedAnchors.filter((entry) => entry.pageNumber === pageNumber)
-  const bookmarkAnchorIds = new Set(workspace.bookmarks.filter((bookmark) => bookmark.documentId === documentId).map((bookmark) => bookmark.sourceAnchorId))
-  const pageBookmarkAnchors = pageSelectionHighlights.filter((anchor) => bookmarkAnchorIds.has(anchor.id))
-  const highlights = (workspace.freeformHighlights ?? []).filter((entry) => entry.documentId === documentId && (entry.pageNumber ?? 1) === pageNumber)
-  const inkStrokes = (workspace.inkStrokes ?? []).filter((entry) => entry.documentId === documentId && (entry.pageNumber ?? 1) === pageNumber)
-  const textboxes = (workspace.sourceTextboxes ?? []).filter((entry) => entry.documentId === documentId && (entry.pageNumber ?? 1) === pageNumber)
-  const draft = draftPath?.pageNumber === pageNumber ? draftPath : null
   return (
-    <div className="mobile-annotation-layer">
-      {pageSelectionHighlights.flatMap((anchor) =>
-        bookmarkAnchorIds.has(anchor.id) ? [] : anchorToHighlightRects(anchor, sourceZoom).map((rect, index) => (
+    <>
+      <SelectedTextHighlightLayer documentId={documentId} pageNumber={pageNumber} sourceZoom={sourceZoom} workspace={workspace} selectionHighlights={selectionHighlights} onAnchorPopup={onAnchorPopup} />
+      <SourceInkLayer documentId={documentId} pageNumber={pageNumber} workspace={workspace} draftPath={draftPath} />
+      <SourceTextboxLayer documentId={documentId} pageNumber={pageNumber} workspace={workspace} onTextboxChange={onTextboxChange} onTextboxDelete={onTextboxDelete} />
+      <SourceMarkerLayer documentId={documentId} pageNumber={pageNumber} sourceZoom={sourceZoom} workspace={workspace} selectionHighlights={selectionHighlights} linkedAnchors={linkedAnchors} onAnchorPopup={onAnchorPopup} />
+    </>
+  )
+}
+
+function getSourcePageVisualInkElement(pageElement: HTMLElement) {
+  return (
+    pageElement.querySelector<HTMLElement>('.mobile-pdf-page-layer') ??
+    pageElement.querySelector<HTMLElement>('.mobile-readable-web-document') ??
+    pageElement
+  )
+}
+
+function getSourcePageInkBounds(pageElement: HTMLElement) {
+  const canvas = pageElement.querySelector<HTMLCanvasElement>('.mobile-source-ink-canvas')
+  const canvasRect = canvas?.getBoundingClientRect()
+  if (canvasRect && canvasRect.width > 1 && canvasRect.height > 1) return canvasRect
+
+  const visualElement = getSourcePageVisualInkElement(pageElement)
+  const visualRect = visualElement.getBoundingClientRect()
+  if (visualRect.width > 1 && visualRect.height > 1) return visualRect
+
+  return pageElement.getBoundingClientRect()
+}
+
+function normalizePointInSourceInkBounds(clientX: number, clientY: number, pageElement: HTMLElement): NormalizedPoint {
+  const rect = getSourcePageInkBounds(pageElement)
+  return {
+    x: Math.max(0, Math.min(1, (clientX - rect.left) / Math.max(1, rect.width))),
+    y: Math.max(0, Math.min(1, (clientY - rect.top) / Math.max(1, rect.height)))
+  }
+}
+
+function positionSourceInkCanvas(canvas: HTMLCanvasElement) {
+  const layer = canvas.parentElement
+  const pageElement = canvas.closest<HTMLElement>('.mobile-annotated-page')
+  if (!layer || !pageElement) return
+
+  const visualRect = getSourcePageVisualInkElement(pageElement).getBoundingClientRect()
+  const layerRect = layer.getBoundingClientRect()
+  const width = Math.max(1, visualRect.width)
+  const height = Math.max(1, visualRect.height)
+
+  canvas.style.left = `${visualRect.left - layerRect.left}px`
+  canvas.style.top = `${visualRect.top - layerRect.top}px`
+  canvas.style.right = 'auto'
+  canvas.style.bottom = 'auto'
+  canvas.style.width = `${width}px`
+  canvas.style.height = `${height}px`
+}
+
+function SelectedTextHighlightLayer({
+  documentId,
+  pageNumber,
+  sourceZoom,
+  workspace,
+  selectionHighlights,
+  onAnchorPopup
+}: {
+  documentId: string
+  pageNumber: number
+  sourceZoom: number
+  workspace: MobileWorkspaceState
+  selectionHighlights: PageAnchor[]
+  onAnchorPopup: (anchor: PageAnchor) => void
+}) {
+  const pageSelectionHighlights = selectionHighlights.filter((entry) => entry.pageNumber === pageNumber)
+  const bookmarkAnchorIds = new Set(workspace.bookmarks.filter((bookmark) => bookmark.documentId === documentId).map((bookmark) => bookmark.sourceAnchorId))
+  const excerptAnchorIds = new Set(
+    workspace.nodes
+      .filter((node) => node.documentId === documentId && (node.kind === 'excerpt' || node.kind === 'comment') && node.sourceAnchorId)
+      .map((node) => node.sourceAnchorId as string)
+  )
+  return (
+    <div className="mobile-selected-text-highlight-layer">
+      {pageSelectionHighlights.flatMap((anchor) => {
+        const hasTags = (anchor.tags ?? []).length > 0
+        const hasTextFill = Boolean(anchor.selectionColor || workspace.activeAnchorId === anchor.id || excerptAnchorIds.has(anchor.id))
+        return bookmarkAnchorIds.has(anchor.id) ? [] : anchorToHighlightRects(anchor, sourceZoom).map((rect, index) => (
           <div
             key={`${anchor.id}-${index}`}
             data-anchor-id={anchor.id}
-            className={`mobile-text-highlight${workspace.activeAnchorId === anchor.id ? ' is-active' : ''}`}
+            className={`mobile-text-highlight${workspace.activeAnchorId === anchor.id ? ' is-active' : ''}${hasTags ? ' has-tag-marker' : ''}${hasTextFill ? ' has-text-fill' : ' is-tag-only'}`}
             style={{
               left: rect.x,
               top: rect.y,
               width: Math.max(8, rect.width),
               height: Math.max(8, rect.height),
-              background: anchor.selectionColor ? `${anchor.selectionColor}44` : 'rgba(255, 255, 255, 0.01)',
-              borderColor: anchor.selectionColor ?? 'rgba(24, 33, 43, 0.35)'
+              background: hasTextFill
+                ? `${anchor.selectionColor ?? getTagColor(anchor.tags?.[0] ?? 'tag')}44`
+                : 'transparent',
+              borderColor: hasTextFill ? (anchor.selectionColor ?? getTagColor(anchor.tags?.[0] ?? 'tag')) : 'transparent'
             }}
             title={anchor.textQuote}
-            aria-hidden="true"
+            aria-hidden={hasTags ? undefined : true}
           >
-            {index === 0
-              ? (anchor.tags ?? []).slice(0, 2).map((tag) => (
-                  <span key={tag}>#{tag}</span>
-                ))
-              : null}
+            {index === 0 && hasTags ? (
+              <button
+                type="button"
+                className="source-highlight-tag-marker"
+                title={(anchor.tags ?? []).map((tag) => `#${tag}`).join(', ')}
+                style={{ background: getTagColor(anchor.tags?.[0] ?? 'tag') }}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  onAnchorPopup(anchor)
+                }}
+              >
+                {tagBadgeLabel(anchor.tags?.[0] ?? 'tag').replace(/^#/, '')}
+              </button>
+            ) : null}
           </div>
         ))
-      )}
+      })}
+    </div>
+  )
+}
+
+function SourceInkLayer({
+  documentId,
+  pageNumber,
+  workspace,
+  draftPath
+}: {
+  documentId: string
+  pageNumber: number
+  workspace: MobileWorkspaceState
+  draftPath: DraftPath | null
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const highlights = (workspace.freeformHighlights ?? []).filter((entry) => entry.surface !== 'workspace' && entry.surface !== 'source-pane' && entry.documentId === documentId && (entry.pageNumber ?? 1) === pageNumber)
+  const inkStrokes = (workspace.inkStrokes ?? []).filter((entry) => entry.surface !== 'workspace' && entry.surface !== 'source-pane' && entry.documentId === documentId && (entry.pageNumber ?? 1) === pageNumber)
+  const draft = draftPath?.pageNumber === pageNumber ? draftPath : null
+
+  useLayoutEffect(() => {
+    const canvas = canvasRef.current
+    const layer = canvas?.parentElement
+    if (!canvas || !layer) return
+
+    const draw = () => {
+      positionSourceInkCanvas(canvas)
+      const rect = canvas.getBoundingClientRect()
+      const width = Math.max(1, rect.width)
+      const height = Math.max(1, rect.height)
+      const dpr = window.devicePixelRatio || 1
+      canvas.width = Math.round(width * dpr)
+      canvas.height = Math.round(height * dpr)
+      canvas.style.width = `${width}px`
+      canvas.style.height = `${height}px`
+
+      const context = canvas.getContext('2d')
+      if (!context) return
+      context.setTransform(dpr, 0, 0, dpr, 0, 0)
+      context.clearRect(0, 0, width, height)
+
+      highlights.forEach((highlight) => {
+        drawInkPath(context, highlight.points, width, height, {
+          color: highlight.color,
+          size: highlight.size ?? 18,
+          opacity: highlight.opacity ?? 0.42,
+          kind: 'highlighter'
+        })
+      })
+      if (draft?.kind === 'freeform-highlight') {
+        drawInkPath(context, draft.points, width, height, {
+          color: workspace.toolSettings.highlight.color,
+          size: workspace.toolSettings.highlight.size,
+          opacity: Math.min(0.75, (workspace.toolSettings.highlight.opacity ?? 0.42) + 0.16),
+          kind: 'highlighter'
+        })
+      }
+
+      inkStrokes.forEach((stroke) => {
+        drawInkPath(context, stroke.points, width, height, {
+          color: stroke.color,
+          size: stroke.size ?? 4,
+          opacity: stroke.tool === 'pencil' ? stroke.opacity ?? 0.58 : 0.92,
+          kind: stroke.tool === 'pencil' ? 'pencil' : 'pen'
+        })
+      })
+      if (draft?.kind === 'pen') {
+        drawInkPath(context, draft.points, width, height, {
+          color: workspace.toolSettings.pen.color,
+          size: workspace.toolSettings.pen.size,
+          opacity: 0.92,
+          kind: 'pen'
+        })
+      }
+      if (draft?.kind === 'pencil') {
+        drawInkPath(context, draft.points, width, height, {
+          color: workspace.toolSettings.pencil.color,
+          size: workspace.toolSettings.pencil.size,
+          opacity: workspace.toolSettings.pencil.opacity,
+          kind: 'pencil'
+        })
+      }
+    }
+
+    draw()
+    const observer = new ResizeObserver(draw)
+    observer.observe(layer)
+    const pageElement = canvas.closest<HTMLElement>('.mobile-annotated-page')
+    const visualElement = pageElement ? getSourcePageVisualInkElement(pageElement) : null
+    if (visualElement && visualElement !== layer) observer.observe(visualElement)
+    return () => observer.disconnect()
+  }, [draft, highlights, inkStrokes, workspace.toolSettings])
+
+  return (
+    <div className="mobile-source-ink-layer">
+      <canvas
+        ref={canvasRef}
+        className="mobile-source-ink-canvas"
+        aria-hidden="true"
+        data-normalized-ink-canvas="true"
+      />
+    </div>
+  )
+}
+
+function SourcePaneInkLayer({ documentId, workspace }: { documentId: string; workspace: MobileWorkspaceState }) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const highlights = (workspace.freeformHighlights ?? []).filter((entry) => entry.surface === 'source-pane' && entry.documentId === documentId)
+  const inkStrokes = (workspace.inkStrokes ?? []).filter((entry) => entry.surface === 'source-pane' && entry.documentId === documentId)
+
+  useLayoutEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+
+    const draw = () => {
+      const rect = canvas.getBoundingClientRect()
+      const width = Math.max(1, rect.width)
+      const height = Math.max(1, rect.height)
+      const dpr = window.devicePixelRatio || 1
+      canvas.width = Math.round(width * dpr)
+      canvas.height = Math.round(height * dpr)
+      canvas.style.width = `${width}px`
+      canvas.style.height = `${height}px`
+
+      const context = canvas.getContext('2d')
+      if (!context) return
+      context.setTransform(dpr, 0, 0, dpr, 0, 0)
+      context.clearRect(0, 0, width, height)
+
+      highlights.forEach((highlight) => {
+        drawInkPath(context, highlight.points, width, height, {
+          color: highlight.color,
+          size: highlight.size ?? 18,
+          opacity: highlight.opacity ?? 0.42,
+          kind: 'highlighter'
+        })
+      })
+      inkStrokes.forEach((stroke) => {
+        drawInkPath(context, stroke.points, width, height, {
+          color: stroke.color,
+          size: stroke.size ?? 4,
+          opacity: stroke.tool === 'pencil' ? stroke.opacity ?? 0.58 : 0.92,
+          kind: stroke.tool === 'pencil' ? 'pencil' : 'pen'
+        })
+      })
+    }
+
+    draw()
+    const observer = new ResizeObserver(draw)
+    observer.observe(canvas)
+    return () => observer.disconnect()
+  }, [highlights, inkStrokes])
+
+  return <canvas ref={canvasRef} className="mobile-source-pane-ink-canvas" aria-hidden="true" data-source-pane-ink-canvas="true" />
+}
+
+function GlobalInkCaptureLayer({
+  toolMode,
+  settings,
+  bodyRef,
+  onRoutePoint,
+  onErase,
+  onCommit,
+  onWheelScroll
+}: {
+  toolMode: ToolMode
+  settings: MobileToolSettings
+  bodyRef: RefObject<HTMLElement | null>
+  onRoutePoint: (clientX: number, clientY: number) => GlobalInkSurface | null
+  onErase: (route: GlobalInkSurface, clientX: number, clientY: number) => void
+  onCommit: (draft: GlobalInkDraft) => void
+  onWheelScroll: (event: ReactWheelEvent<HTMLCanvasElement>) => void
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const draftRef = useRef<GlobalInkDraft | null>(null)
+
+  useLayoutEffect(() => {
+    const canvas = canvasRef.current
+    const body = bodyRef.current
+    if (!canvas || !body) return
+    const resize = () => resizeGlobalInkCanvas(canvas)
+    resize()
+    const observer = new ResizeObserver(resize)
+    observer.observe(body)
+    return () => observer.disconnect()
+  }, [bodyRef])
+
+  function screenPoint(event: ReactPointerEvent<HTMLCanvasElement>): NormalizedPoint {
+    const rect = event.currentTarget.getBoundingClientRect()
+    return { x: event.clientX - rect.left, y: event.clientY - rect.top }
+  }
+
+  function clearLiveCanvas() {
+    const canvas = canvasRef.current
+    const context = canvas?.getContext('2d')
+    const rect = canvas?.getBoundingClientRect()
+    if (!canvas || !context || !rect) return
+    context.clearRect(0, 0, Math.max(1, rect.width), Math.max(1, rect.height))
+  }
+
+  function handlePointerDown(event: ReactPointerEvent<HTMLCanvasElement>) {
+    const route = onRoutePoint(event.clientX, event.clientY)
+    if (!route) return
+    event.preventDefault()
+    event.stopPropagation()
+    event.currentTarget.setPointerCapture(event.pointerId)
+
+    if (toolMode === 'eraser') {
+      onErase(route, event.clientX, event.clientY)
+      return
+    }
+    if (toolMode === 'pen' || toolMode === 'pencil' || toolMode === 'freeform-highlight') {
+      draftRef.current = {
+        kind: toolMode,
+        surface: route.kind,
+        pageNumber: route.kind === 'source' ? route.pageNumber : undefined,
+        points: [route.point],
+        screenPoints: [screenPoint(event)]
+      }
+    }
+  }
+
+  function handlePointerMove(event: ReactPointerEvent<HTMLCanvasElement>) {
+    if (event.buttons !== 1) return
+    const route = onRoutePoint(event.clientX, event.clientY)
+    if (!route) return
+    event.preventDefault()
+    event.stopPropagation()
+
+    if (toolMode === 'eraser') {
+      onErase(route, event.clientX, event.clientY)
+      return
+    }
+    const draft = draftRef.current
+    if (!draft || draft.surface !== route.kind || (draft.surface === 'source' && draft.pageNumber !== (route.kind === 'source' ? route.pageNumber : undefined))) return
+
+    const nextScreenPoint = screenPoint(event)
+    const previous = draft.screenPoints.at(-1)
+    if (previous) drawLiveGlobalInkSegment(event.currentTarget, draft.kind, [previous, nextScreenPoint], settings)
+    draftRef.current = {
+      ...draft,
+      points: [...draft.points, route.point],
+      screenPoints: [...draft.screenPoints, nextScreenPoint]
+    }
+  }
+
+  function handlePointerUp(event: ReactPointerEvent<HTMLCanvasElement>) {
+    event.preventDefault()
+    event.stopPropagation()
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+    const draft = draftRef.current
+    draftRef.current = null
+    clearLiveCanvas()
+    if (draft) onCommit(draft)
+  }
+
+  return (
+    <canvas
+      ref={canvasRef}
+      className="global-ink-capture-layer"
+      data-global-ink-capture-layer="true"
+      aria-hidden="true"
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerUp}
+      onWheel={onWheelScroll}
+    />
+  )
+}
+
+function drawInkPath(
+  context: CanvasRenderingContext2D,
+  points: NormalizedPoint[],
+  width: number,
+  height: number,
+  options: { color: string; size: number; opacity: number; kind: 'pen' | 'pencil' | 'highlighter' }
+) {
+  if (points.length < 2) return
+
+  context.save()
+  context.globalCompositeOperation = options.kind === 'highlighter' ? 'multiply' : 'source-over'
+  context.globalAlpha = options.opacity
+  context.strokeStyle = options.color
+  context.lineWidth = Math.max(1.5, options.size)
+  context.lineCap = 'round'
+  context.lineJoin = 'round'
+
+  context.beginPath()
+  context.moveTo(points[0].x * width, points[0].y * height)
+  for (let index = 1; index < points.length - 1; index += 1) {
+    const next = points[index + 1]
+    const midpointX = ((points[index].x + next.x) / 2) * width
+    const midpointY = ((points[index].y + next.y) / 2) * height
+    context.quadraticCurveTo(points[index].x * width, points[index].y * height, midpointX, midpointY)
+  }
+  const last = points[points.length - 1]
+  context.lineTo(last.x * width, last.y * height)
+  context.stroke()
+  context.restore()
+}
+
+function drawLiveInkSegment(canvas: HTMLCanvasElement, kind: DraftPath['kind'], points: NormalizedPoint[], settings: MobileToolSettings) {
+  const rect = canvas.getBoundingClientRect()
+  const width = Math.max(1, rect.width)
+  const height = Math.max(1, rect.height)
+  const dpr = window.devicePixelRatio || 1
+  if (canvas.width !== Math.round(width * dpr) || canvas.height !== Math.round(height * dpr)) {
+    canvas.width = Math.round(width * dpr)
+    canvas.height = Math.round(height * dpr)
+    canvas.style.width = `${width}px`
+    canvas.style.height = `${height}px`
+  }
+
+  const context = canvas.getContext('2d')
+  if (!context) return
+  context.setTransform(dpr, 0, 0, dpr, 0, 0)
+  if (kind === 'freeform-highlight') {
+    drawInkPath(context, points, width, height, {
+      color: settings.highlight.color,
+      size: settings.highlight.size,
+      opacity: Math.min(0.75, (settings.highlight.opacity ?? 0.42) + 0.16),
+      kind: 'highlighter'
+    })
+    return
+  }
+  if (kind === 'pencil') {
+    drawInkPath(context, points, width, height, {
+      color: settings.pencil.color,
+      size: settings.pencil.size,
+      opacity: settings.pencil.opacity,
+      kind: 'pencil'
+    })
+    return
+  }
+  drawInkPath(context, points, width, height, {
+    color: settings.pen.color,
+    size: settings.pen.size,
+    opacity: 0.92,
+    kind: 'pen'
+  })
+}
+
+function resizeGlobalInkCanvas(canvas: HTMLCanvasElement) {
+  const rect = canvas.getBoundingClientRect()
+  const width = Math.max(1, rect.width)
+  const height = Math.max(1, rect.height)
+  const dpr = window.devicePixelRatio || 1
+  const nextWidth = Math.round(width * dpr)
+  const nextHeight = Math.round(height * dpr)
+  if (canvas.width !== nextWidth || canvas.height !== nextHeight) {
+    canvas.width = nextWidth
+    canvas.height = nextHeight
+    canvas.style.width = `${width}px`
+    canvas.style.height = `${height}px`
+  }
+  canvas.getContext('2d')?.setTransform(dpr, 0, 0, dpr, 0, 0)
+}
+
+function drawLiveGlobalInkSegment(canvas: HTMLCanvasElement, kind: DraftPath['kind'], points: NormalizedPoint[], settings: MobileToolSettings) {
+  resizeGlobalInkCanvas(canvas)
+  const context = canvas.getContext('2d')
+  if (!context) return
+
+  const options = kind === 'freeform-highlight'
+    ? {
+        color: settings.highlight.color,
+        size: settings.highlight.size,
+        opacity: Math.min(0.75, (settings.highlight.opacity ?? 0.42) + 0.16),
+        kind: 'highlighter' as const
+      }
+    : kind === 'pencil'
+      ? {
+          color: settings.pencil.color,
+          size: settings.pencil.size,
+          opacity: settings.pencil.opacity,
+          kind: 'pencil' as const
+        }
+      : {
+          color: settings.pen.color,
+          size: settings.pen.size,
+          opacity: 0.92,
+          kind: 'pen' as const
+        }
+
+  if (points.length < 2) return
+  context.save()
+  context.globalCompositeOperation = options.kind === 'highlighter' ? 'multiply' : 'source-over'
+  context.globalAlpha = options.opacity
+  context.strokeStyle = options.color
+  context.lineWidth = Math.max(1.5, options.size)
+  context.lineCap = 'round'
+  context.lineJoin = 'round'
+  context.beginPath()
+  context.moveTo(points[0].x, points[0].y)
+  context.lineTo(points[1].x, points[1].y)
+  context.stroke()
+  context.restore()
+}
+
+function SourceToolHitLayer({ pageNumber }: { pageNumber: number }) {
+  return <div className="mobile-source-tool-hit-layer" data-page-number={pageNumber} aria-hidden="true" />
+}
+
+function SourceInkToolbar({
+  toolMode,
+  settings,
+  pageNumber,
+  canUndo,
+  onToolMode,
+  onSettingsChange,
+  onUndo,
+  onClearPage,
+  onClose
+}: {
+  toolMode: ToolMode
+  settings: MobileToolSettings
+  pageNumber: number
+  canUndo: boolean
+  onToolMode: (mode: ToolMode) => void
+  onSettingsChange: (settings: MobileToolSettings) => void
+  onUndo: () => void
+  onClearPage: () => void
+  onClose: () => void
+}) {
+  const toolbarRef = useRef<HTMLDivElement | null>(null)
+  const [position, setPosition] = useState({ left: 18, top: 72 })
+  const [drag, setDrag] = useState<{ pointerId: number; dx: number; dy: number } | null>(null)
+  const usesColor = toolMode !== 'eraser'
+  const activeColor = toolMode === 'freeform-highlight'
+    ? settings.highlight.color
+    : toolMode === 'pencil'
+      ? settings.pencil.color
+      : settings.pen.color
+  const activeSize = toolMode === 'freeform-highlight'
+    ? settings.highlight.size
+    : toolMode === 'eraser'
+      ? settings.eraser.size
+      : toolMode === 'pencil'
+        ? settings.pencil.size
+        : settings.pen.size
+  const sizeMax = toolMode === 'freeform-highlight' ? 42 : toolMode === 'eraser' ? 72 : 24
+  const sizeMin = toolMode === 'eraser' ? 12 : 1
+  const activeToolLabel = toolMode === 'freeform-highlight' ? 'Highlighter' : toolMode === 'pencil' ? 'Pencil' : toolMode === 'eraser' ? 'Eraser' : 'Pen'
+
+  function updateColor(color: string) {
+    if (!usesColor) return
+    if (toolMode === 'freeform-highlight') {
+      onSettingsChange({ ...settings, highlight: { ...settings.highlight, color } })
+      return
+    }
+    if (toolMode === 'pencil') {
+      onSettingsChange({ ...settings, pencil: { ...settings.pencil, color } })
+      return
+    }
+    onSettingsChange({ ...settings, pen: { ...settings.pen, color } })
+  }
+
+  function updateSize(size: number) {
+    if (toolMode === 'freeform-highlight') {
+      onSettingsChange({ ...settings, highlight: { ...settings.highlight, size } })
+      return
+    }
+    if (toolMode === 'eraser') {
+      onSettingsChange({ ...settings, eraser: { ...settings.eraser, size } })
+      return
+    }
+    if (toolMode === 'pencil') {
+      onSettingsChange({ ...settings, pencil: { ...settings.pencil, size } })
+      return
+    }
+    onSettingsChange({ ...settings, pen: { ...settings.pen, size } })
+  }
+
+  const clampToolbarPosition = useCallback((left: number, top: number) => {
+    const toolbar = toolbarRef.current
+    const parent = toolbar?.parentElement
+    const parentRect = parent?.getBoundingClientRect()
+    const toolbarRect = toolbar?.getBoundingClientRect()
+    if (!parentRect || !toolbarRect) return { left, top }
+
+    const maxLeft = Math.max(8, parentRect.width - toolbarRect.width - 8)
+    const maxTop = Math.max(8, parentRect.height - toolbarRect.height - 8)
+    return {
+      left: Math.max(8, Math.min(left, maxLeft)),
+      top: Math.max(8, Math.min(top, maxTop))
+    }
+  }, [])
+
+  const moveToolbar = useCallback((clientX: number, clientY: number, offsetX: number, offsetY: number) => {
+    const toolbar = toolbarRef.current
+    const parent = toolbar?.parentElement
+    const parentRect = parent?.getBoundingClientRect()
+    if (!parentRect) return
+    setPosition(clampToolbarPosition(clientX - parentRect.left - offsetX, clientY - parentRect.top - offsetY))
+  }, [clampToolbarPosition])
+
+  useLayoutEffect(() => {
+    const toolbar = toolbarRef.current
+    const parent = toolbar?.parentElement
+    if (!toolbar || !parent) return
+    const clampCurrent = () =>
+      setPosition((current) => {
+        const next = clampToolbarPosition(current.left, current.top)
+        return next.left === current.left && next.top === current.top ? current : next
+      })
+    clampCurrent()
+    const observer = new ResizeObserver(clampCurrent)
+    observer.observe(parent)
+    observer.observe(toolbar)
+    window.addEventListener('orientationchange', clampCurrent)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('orientationchange', clampCurrent)
+    }
+  }, [clampToolbarPosition])
+
+  function actionTitle(action: string) {
+    return `${action} ink toolbar`
+  }
+
+  return (
+    <div
+      ref={toolbarRef}
+      className="source-ink-toolbar"
+      aria-label="Ink tools"
+      style={{ top: position.top }}
+      onPointerMove={(event) => {
+        if (!drag || drag.pointerId !== event.pointerId) return
+        event.preventDefault()
+        moveToolbar(event.clientX, event.clientY, drag.dx, drag.dy)
+      }}
+      onPointerUp={(event) => {
+        if (drag?.pointerId === event.pointerId) {
+          event.currentTarget.releasePointerCapture(event.pointerId)
+          setDrag(null)
+        }
+      }}
+      onPointerCancel={(event) => {
+        if (drag?.pointerId === event.pointerId) setDrag(null)
+      }}
+    >
+      <button
+        className="source-ink-toolbar-grip"
+        type="button"
+        aria-label="Move ink toolbar"
+        title="Move toolbar"
+        onPointerDown={(event) => {
+          const rect = toolbarRef.current?.getBoundingClientRect()
+          if (!rect) return
+          event.preventDefault()
+          event.currentTarget.parentElement?.setPointerCapture(event.pointerId)
+          setDrag({ pointerId: event.pointerId, dx: event.clientX - rect.left, dy: event.clientY - rect.top })
+        }}
+      >
+        <span />
+        <span />
+      </button>
+      <div className="source-ink-toolbar-tools" role="group" aria-label="Ink mode">
+        <button className={toolMode === 'pen' ? 'is-active' : ''} type="button" onClick={() => onToolMode('pen')} aria-label="Pen" title="Pen"><Icon name="pen" /></button>
+        <button className={toolMode === 'pencil' ? 'is-active' : ''} type="button" onClick={() => onToolMode('pencil')} aria-label="Pencil" title="Pencil"><Icon name="pencil" /></button>
+        <button className={toolMode === 'freeform-highlight' ? 'is-active' : ''} type="button" onClick={() => onToolMode('freeform-highlight')} aria-label="Highlighter" title="Highlighter"><Icon name="highlighter" /></button>
+        <button className={toolMode === 'eraser' ? 'is-active' : ''} type="button" onClick={() => onToolMode('eraser')} aria-label="Eraser" title="Eraser"><Icon name="eraser" /></button>
+      </div>
+      {usesColor ? (
+        <div className="source-ink-toolbar-colors" aria-label={`${activeToolLabel} colors`}>
+          {INK_COLORS.map((color) => (
+            <button
+              key={color}
+              className={color.toLowerCase() === activeColor.toLowerCase() ? 'is-active' : ''}
+              type="button"
+              aria-label={`${activeToolLabel} color ${color}`}
+              title={color}
+              onClick={() => updateColor(color)}
+              style={{ backgroundColor: color }}
+            />
+          ))}
+        </div>
+      ) : null}
+      <label className="source-ink-toolbar-size">
+        <span title={`${activeToolLabel} size`}>{activeSize}</span>
+        <input aria-label={`${activeToolLabel} size`} type="range" min={sizeMin} max={sizeMax} value={activeSize} onChange={(event) => updateSize(Number(event.target.value))} />
+      </label>
+      <button className="source-ink-toolbar-action" type="button" onClick={onUndo} disabled={!canUndo} aria-label="Undo ink stroke" title="Undo"><Icon name="undo" /></button>
+      <button className="source-ink-toolbar-action" type="button" onClick={onClearPage} aria-label={`Clear ink on page ${pageNumber}`} title={`Clear page ${pageNumber}`}><Icon name="trash" /></button>
+      <button className="source-ink-toolbar-close" type="button" aria-label="Close ink toolbar" title={actionTitle('Close')} onClick={onClose}><Icon name="close" /></button>
+    </div>
+  )
+}
+
+function SourceMarkerLayer({
+  documentId,
+  pageNumber,
+  sourceZoom,
+  workspace,
+  selectionHighlights,
+  linkedAnchors,
+  onAnchorPopup
+}: {
+  documentId: string
+  pageNumber: number
+  sourceZoom: number
+  workspace: MobileWorkspaceState
+  selectionHighlights: PageAnchor[]
+  linkedAnchors: PageAnchor[]
+  onAnchorPopup: (anchor: PageAnchor) => void
+}) {
+  const pageSelectionHighlights = selectionHighlights.filter((entry) => entry.pageNumber === pageNumber)
+  const pageLinkedAnchors = linkedAnchors.filter((entry) => entry.pageNumber === pageNumber)
+  const bookmarkAnchorIds = new Set(workspace.bookmarks.filter((bookmark) => bookmark.documentId === documentId).map((bookmark) => bookmark.sourceAnchorId))
+  const pageBookmarkAnchors = pageSelectionHighlights.filter((anchor) => bookmarkAnchorIds.has(anchor.id))
+  return (
+    <div className="mobile-source-marker-layer">
       {pageBookmarkAnchors.map((anchor) => {
         const rect = anchorToHighlightRects(anchor, sourceZoom)[0]
         if (!rect) return null
@@ -1456,37 +3048,26 @@ function AnnotationLayer({
           />
         )
       })}
-      <svg className="mobile-source-overlay" aria-hidden="true" viewBox="0 0 1 1" preserveAspectRatio="none">
-        {highlights.map((highlight) => (
-          <polyline
-            key={highlight.id}
-            className="mobile-freeform-highlight-path"
-            points={pointsToPolyline(highlight.points)}
-            stroke={highlight.color}
-            strokeWidth={(highlight.size ?? 18) / 900}
-            opacity={highlight.opacity ?? 0.42}
-          />
-        ))}
-        {draft?.kind === 'freeform-highlight' ? (
-          <polyline className="mobile-freeform-highlight-path is-draft" points={pointsToPolyline(draft.points)} stroke={workspace.toolSettings.highlight.color} strokeWidth={workspace.toolSettings.highlight.size / 900} />
-        ) : null}
-        {inkStrokes.map((stroke) => (
-          <polyline
-            key={stroke.id}
-            className={`mobile-ink-path${stroke.tool === 'pencil' ? ' is-pencil' : ''}`}
-            points={pointsToPolyline(stroke.points)}
-            stroke={stroke.color}
-            strokeWidth={(stroke.size ?? 4) / 900}
-            opacity={stroke.tool === 'pencil' ? stroke.opacity ?? 0.58 : undefined}
-          />
-        ))}
-        {draft?.kind === 'pen' ? (
-          <polyline className="mobile-ink-path is-draft" points={pointsToPolyline(draft.points)} stroke={workspace.toolSettings.pen.color} strokeWidth={workspace.toolSettings.pen.size / 900} />
-        ) : null}
-        {draft?.kind === 'pencil' ? (
-          <polyline className="mobile-ink-path is-draft is-pencil" points={pointsToPolyline(draft.points)} stroke={workspace.toolSettings.pencil.color} strokeWidth={workspace.toolSettings.pencil.size / 900} opacity={workspace.toolSettings.pencil.opacity} />
-        ) : null}
-      </svg>
+    </div>
+  )
+}
+
+function SourceTextboxLayer({
+  documentId,
+  pageNumber,
+  workspace,
+  onTextboxChange,
+  onTextboxDelete
+}: {
+  documentId: string
+  pageNumber: number
+  workspace: MobileWorkspaceState
+  onTextboxChange: (textbox: SourceTextbox) => void
+  onTextboxDelete: (textboxId: string) => void
+}) {
+  const textboxes = (workspace.sourceTextboxes ?? []).filter((entry) => entry.documentId === documentId && (entry.pageNumber ?? 1) === pageNumber)
+  return (
+    <div className="mobile-source-textbox-layer">
       {textboxes.map((textbox) => (
         <SourceTextboxView key={textbox.id} textbox={textbox} onChange={onTextboxChange} onDelete={onTextboxDelete} />
       ))}
@@ -1494,18 +3075,19 @@ function AnnotationLayer({
   )
 }
 
-function SourceToolHitLayer({ pageNumber }: { pageNumber: number }) {
-  return <div className="mobile-source-tool-hit-layer" data-page-number={pageNumber} aria-hidden="true" />
-}
-
 function SourceTextboxView({ textbox, onChange, onDelete }: { textbox: SourceTextbox; onChange: (textbox: SourceTextbox) => void; onDelete: (textboxId: string) => void }) {
+  const [focused, setFocused] = useState(false)
   function stopSourceTextboxEvent(event: React.PointerEvent<HTMLElement>) {
     event.stopPropagation()
   }
 
+  function updateTextStyle(style: Partial<TextStyle>) {
+    onChange({ ...textbox, textStyle: { ...(textbox.textStyle ?? {}), ...style } })
+  }
+
   return (
     <div
-      className="mobile-source-textbox-shell"
+      className={`mobile-source-textbox-shell${focused ? ' is-editing' : ''}`}
       onPointerDown={stopSourceTextboxEvent}
       onPointerMove={stopSourceTextboxEvent}
       onPointerUp={stopSourceTextboxEvent}
@@ -1516,6 +3098,17 @@ function SourceTextboxView({ textbox, onChange, onDelete }: { textbox: SourceTex
         minHeight: `${(textbox.heightNorm ?? 0.16) * 100}%`
       }}
     >
+      <SharedTextboxToolbar
+        visible={focused}
+        kind="source"
+        left={0}
+        top={-64}
+        style={textbox.textStyle}
+        onStyleChange={updateTextStyle}
+        onDelete={() => onDelete(textbox.id)}
+        onUndo={() => document.execCommand('undo')}
+        onRedo={() => document.execCommand('redo')}
+      />
       <div className="mobile-source-textbox-handle">
         <span>Text</span>
         <button type="button" onClick={(event) => { event.stopPropagation(); onDelete(textbox.id) }}>Delete</button>
@@ -1524,12 +3117,41 @@ function SourceTextboxView({ textbox, onChange, onDelete }: { textbox: SourceTex
         className="mobile-source-textbox"
         value={textbox.content}
         placeholder="Type source note..."
+        style={styleToCss(textbox.textStyle)}
         onPointerDown={(event) => event.stopPropagation()}
         onClick={(event) => event.stopPropagation()}
+        onFocus={() => setFocused(true)}
+        onBlur={() => window.setTimeout(() => setFocused(false), 120)}
         onChange={(event) => onChange({ ...textbox, content: event.target.value })}
       />
     </div>
   )
+}
+
+function tagBadgeLabel(tag: string) {
+  const clean = tag.replace(/^#/, '').trim()
+  const first = clean.charAt(0).toUpperCase()
+  return first ? `#${first}` : '#'
+}
+
+function tagDisplayLabel(tag: string) {
+  return tag.replace(/^#/, '').trim() || 'Tag'
+}
+
+function styleToCss(style?: TextStyle): CSSProperties {
+  const decoration = [
+    style?.underline ? 'underline' : '',
+    style?.strikethrough ? 'line-through' : ''
+  ].filter(Boolean).join(' ')
+  return {
+    fontFamily: style?.fontFamily,
+    fontSize: style?.fontSize,
+    fontWeight: style?.fontWeight,
+    fontStyle: style?.fontStyle,
+    textDecoration: decoration || undefined,
+    color: style?.color,
+    backgroundColor: style?.backgroundColor
+  }
 }
 
 function ToolPanel({
@@ -1586,6 +3208,776 @@ function Modal({ title, children, onClose }: { title: string; children: React.Re
   )
 }
 
+function MoreSettingsPanel({
+  workspace,
+  onUpdateWorkspace,
+  record,
+  onClose
+}: {
+  workspace: MobileWorkspaceState
+  onUpdateWorkspace: (updater: (current: MobileWorkspaceState) => MobileWorkspaceState) => void
+  record: MobileDocumentRecord
+  onClose: () => void
+}) {
+  const [showTagManager, setShowTagManager] = useState(false)
+  const [showDefinedTerms, setShowDefinedTerms] = useState(false)
+  const [showScrollOptions, setShowScrollOptions] = useState(false)
+  const [showExcerptOptions, setShowExcerptOptions] = useState(false)
+  const [showPenScrolling, setShowPenScrolling] = useState(false)
+  const [showChooseLayout, setShowChooseLayout] = useState(false)
+  const [activeMenu, setActiveMenu] = useState<LtSettingsMenu>(null)
+  const [floatingPosition, setFloatingPosition] = useState({ top: 160, right: 472 })
+  function updateWorkspaceSetting<K extends keyof MobileWorkspaceState>(key: K, value: MobileWorkspaceState[K]) {
+    onUpdateWorkspace((current) => ({ ...current, [key]: value, updatedAt: new Date().toISOString() }))
+  }
+
+  function updateLayoutSetting<K extends keyof MobileWorkspaceState['viewerLayout']>(key: K, value: MobileWorkspaceState['viewerLayout'][K]) {
+    onUpdateWorkspace((current) => ({
+      ...current,
+      viewerLayout: { ...current.viewerLayout, [key]: value },
+      updatedAt: new Date().toISOString()
+    }))
+  }
+
+  function updateSyncEnabled(syncEnabled: boolean) {
+    onUpdateWorkspace((current) => ({
+      ...current,
+      settings: { ...current.settings, syncEnabled },
+      updatedAt: new Date().toISOString()
+    }))
+  }
+
+  function openMenuFromEvent(menu: LtSettingsMenu, event: ReactMouseEvent<HTMLButtonElement>) {
+    if (!menu) return
+    const rect = event.currentTarget.getBoundingClientRect()
+    setFloatingPosition({
+      top: Math.max(96, rect.top - 8),
+      right: Math.max(16, window.innerWidth - rect.left + 12)
+    })
+    setActiveMenu((current) => (current === menu ? null : menu))
+  }
+
+  const arrangement = workspace.workspaceArrangement ?? 'automatic'
+  const scrollWheelBehavior = workspace.scrollWheelBehavior ?? 'zoom'
+  const excerptDoubleClickAction = workspace.excerptDoubleClickAction ?? 'selectGroup'
+  const penScrollingBehavior = workspace.penScrollingBehavior ?? 'scrollByDefault'
+
+  return (
+    <>
+      <div className="lt-settings-panel">
+        <div className="lt-settings-project">
+          <div>
+            <strong>Project Name</strong>
+            <span>{record.document.title}</span>
+          </div>
+          <button className="lt-settings-close" type="button" aria-label="Close settings" onClick={onClose}>×</button>
+        </div>
+
+        <SettingsSection title="Project">
+          <SettingsRow icon="▱" label="Tag Manager" active={showTagManager} onClick={() => setShowTagManager(true)} />
+          <SettingsRow icon="Ex" label="Defined Terms & Attachments" hasChevron active={activeMenu === 'definedTerms'} onClick={(event) => openMenuFromEvent('definedTerms', event)} />
+        </SettingsSection>
+        <SettingsSection title="Syncing">
+          <SettingsRow icon="☁" label="Sync Across Devices" hasChevron active={activeMenu === 'sync'} onClick={(event) => openMenuFromEvent('sync', event)} />
+        </SettingsSection>
+        <SettingsSection title="Display">
+          <SettingsRow icon="←" label="Left Hand Layout" toggleValue={workspace.viewerLayout.leftHandLayout ?? false} onToggle={() => updateLayoutSetting('leftHandLayout', !(workspace.viewerLayout.leftHandLayout ?? false))} />
+          <SettingsRow icon="▦" label="Workspace Location" hasChevron active={activeMenu === 'workspaceLocation'} onClick={(event) => openMenuFromEvent('workspaceLocation', event)} />
+          <SettingsRow icon="▤" label="Multiple Workspace Layout" hasChevron active={activeMenu === 'multipleWorkspaceLayout'} onClick={(event) => openMenuFromEvent('multipleWorkspaceLayout', event)} />
+          <SettingsRow icon="▥" label="Multiple Document Layout" hasChevron active={activeMenu === 'multipleDocumentLayout'} onClick={(event) => openMenuFromEvent('multipleDocumentLayout', event)} />
+          <SettingsRow icon="✣" label="Lock Workspace by Default" hasChevron active={activeMenu === 'lockWorkspace'} onClick={(event) => openMenuFromEvent('lockWorkspace', event)} />
+          <SettingsRow icon="▤" label="Auto-Position Doc Comments" toggleValue={workspace.viewerLayout.autoPositionComments ?? true} onToggle={() => updateLayoutSetting('autoPositionComments', !(workspace.viewerLayout.autoPositionComments ?? true))} />
+        </SettingsSection>
+        <SettingsSection title="Text Linking">
+          <SettingsRow icon="BA" label="Link Reference Style" hasChevron active={activeMenu === 'linkReferenceStyle'} onClick={(event) => openMenuFromEvent('linkReferenceStyle', event)} />
+        </SettingsSection>
+        <SettingsSection title="Navigation">
+          <SettingsRow icon="◐" label="Scroll-Wheel Options" hasChevron active={activeMenu === 'scrollWheel'} onClick={(event) => openMenuFromEvent('scrollWheel', event)} />
+          <SettingsRow icon="☝" label="Excerpt Double-Click Options" hasChevron active={activeMenu === 'doubleClick'} onClick={(event) => openMenuFromEvent('doubleClick', event)} />
+        </SettingsSection>
+        <SettingsSection title="Ink Settings">
+          <SettingsRow icon="〽" label="Use finger for inking" toggleValue={workspace.useFingerForInking ?? false} onToggle={() => updateWorkspaceSetting('useFingerForInking', !(workspace.useFingerForInking ?? false))} />
+          <SettingsRow icon="✎" label="Pen Scrolling Options" hasChevron active={activeMenu === 'penScrolling'} onClick={(event) => openMenuFromEvent('penScrolling', event)} />
+        </SettingsSection>
+      </div>
+
+      {activeMenu === 'definedTerms' ? (
+        <SettingsFloatingMenu className="lt-floating-menu--large" position={floatingPosition}>
+          <div className="lt-submenu-title">Show Defined Terms & Attachments</div>
+          <ToggleLine label="Show Defined Terms, Attachments" value={workspace.showDefinedTermsAttachments ?? true} onChange={() => updateWorkspaceSetting('showDefinedTermsAttachments', !(workspace.showDefinedTermsAttachments ?? true))} />
+          <p className="lt-muted">Parsing Disabled</p>
+          <div className="lt-submenu-title">Finding Inconsistencies</div>
+          <ActionLine title="Search for Undefined Terms" description="Search for possible defined terms without definitions" active={workspace.findUndefinedTerms ?? false} onClick={() => updateWorkspaceSetting('findUndefinedTerms', !(workspace.findUndefinedTerms ?? false))} />
+          <ActionLine title="Search for Overdefined Terms" description="Find defined terms that may have multiple definitions" active={workspace.findOverdefinedTerms ?? false} onClick={() => updateWorkspaceSetting('findOverdefinedTerms', !(workspace.findOverdefinedTerms ?? false))} />
+          <div className="lt-submenu-title">Options</div>
+          <ActionLine title="Underline Defined Terms" description="Underline defined terms and link back to the definition" active={workspace.underlineDefinedTerms ?? false} onClick={() => updateWorkspaceSetting('underlineDefinedTerms', !(workspace.underlineDefinedTerms ?? false))} />
+          <ActionLine title="Underline Exhibits" description="Underline references to exhibits, annexures, and attachments" active={workspace.underlineExhibits ?? false} onClick={() => updateWorkspaceSetting('underlineExhibits', !(workspace.underlineExhibits ?? false))} />
+          <ActionLine title="Link Across Documents" description="Underline and link terms that refer to different documents" active={workspace.linkAcrossDocuments ?? false} onClick={() => updateWorkspaceSetting('linkAcrossDocuments', !(workspace.linkAcrossDocuments ?? false))} />
+        </SettingsFloatingMenu>
+      ) : null}
+
+      {activeMenu === 'sync' ? (
+        <SettingsFloatingMenu className="lt-sync-popup" position={floatingPosition}>
+          <h2>LiquidText Syncing</h2>
+          <div className="lt-sync-icons"><span>▯</span><b>+</b><span>☁</span><b>+</b><span>▭</span></div>
+          <ul>
+            <li>Sync projects between devices!</li>
+            <li>Get LiquidText on PC, Mac, & iPad</li>
+            <li>Backup to the cloud</li>
+            <li>Inking, multiple documents per project, tagging, and all latest features</li>
+          </ul>
+          <button className="lt-primary-button" type="button" onClick={() => updateSyncEnabled(true)}>Start Trial</button>
+        </SettingsFloatingMenu>
+      ) : null}
+
+      {activeMenu === 'workspaceLocation' ? (
+        <SettingsFloatingMenu position={floatingPosition}>
+          <div className="lt-submenu-title">Choose Layout</div>
+          <OptionLine icon="▦" label="Beside Document" selected={arrangement === 'horizontal'} onClick={() => updateWorkspaceSetting('workspaceArrangement', 'horizontal')} />
+          <OptionLine icon="▤" label="Below Document" selected={arrangement === 'vertical'} onClick={() => updateWorkspaceSetting('workspaceArrangement', 'vertical')} />
+          <OptionLine icon="✣" label="Automatic" selected={arrangement === 'automatic'} onClick={() => updateWorkspaceSetting('workspaceArrangement', 'automatic')} />
+        </SettingsFloatingMenu>
+      ) : null}
+
+      {activeMenu === 'multipleWorkspaceLayout' ? (
+        <SettingsFloatingMenu position={floatingPosition}>
+          <div className="lt-submenu-title">Choose Layout</div>
+          <OptionLine icon="▥" label="Arrange Horizontally" selected={workspace.viewerLayout.multipleWorkspaceLayout === true} onClick={() => updateLayoutSetting('multipleWorkspaceLayout', true)} />
+          <OptionLine icon="▤" label="Arrange Vertically" selected={workspace.viewerLayout.multipleWorkspaceLayout === false} onClick={() => updateLayoutSetting('multipleWorkspaceLayout', false)} />
+        </SettingsFloatingMenu>
+      ) : null}
+
+      {activeMenu === 'multipleDocumentLayout' ? (
+        <SettingsFloatingMenu position={floatingPosition}>
+          <div className="lt-submenu-title">Choose Layout</div>
+          <OptionLine icon="▥" label="Arrange Horizontally" selected={workspace.viewerLayout.multipleDocumentLayout === true} onClick={() => updateLayoutSetting('multipleDocumentLayout', true)} />
+          <OptionLine icon="▤" label="Arrange Vertically" selected={workspace.viewerLayout.multipleDocumentLayout !== true} onClick={() => updateLayoutSetting('multipleDocumentLayout', false)} />
+        </SettingsFloatingMenu>
+      ) : null}
+
+      {activeMenu === 'lockWorkspace' ? (
+        <SettingsFloatingMenu position={floatingPosition}>
+          <div className="lt-submenu-title">Options</div>
+          <OptionLine label="Lock Objects in Workspace" description="Workspace objects are locked until you select them" selected={workspace.viewerLayout.workspaceLocked ?? false} onClick={() => updateLayoutSetting('workspaceLocked', true)} />
+          <OptionLine label="Unlock Objects in Workspace" description="Workspace objects are unlocked" selected={!(workspace.viewerLayout.workspaceLocked ?? false)} onClick={() => updateLayoutSetting('workspaceLocked', false)} />
+        </SettingsFloatingMenu>
+      ) : null}
+
+      {activeMenu === 'linkReferenceStyle' ? (
+        <SettingsFloatingMenu className="lt-floating-menu--wide" position={floatingPosition}>
+          <ToggleLine label="Limit Project and Doc Length" description="Limit document and project names in citations to 15 characters." value={workspace.limitProjectDocLength ?? false} onChange={() => updateWorkspaceSetting('limitProjectDocLength', !(workspace.limitProjectDocLength ?? false))} />
+          <ToggleLine label="Abbreviate Document Name" description={'If a document is named "Example Earnings Report", reference links show "EER".'} value={workspace.abbreviateDocumentName ?? false} onChange={() => updateWorkspaceSetting('abbreviateDocumentName', !(workspace.abbreviateDocumentName ?? false))} />
+          <ToggleLine label="Enclose in Parenthesis" description="Enclose the citation in parenthesis." value={workspace.encloseInParenthesis ?? false} onChange={() => updateWorkspaceSetting('encloseInParenthesis', !(workspace.encloseInParenthesis ?? false))} />
+        </SettingsFloatingMenu>
+      ) : null}
+
+      {activeMenu === 'scrollWheel' ? (
+        <SettingsFloatingMenu position={floatingPosition}>
+          <div className="lt-submenu-title">Scroll-Wheel Options</div>
+          <OptionLine label="Zoom Workspace" description="Mouse wheel over workspace zooms in or out." selected={scrollWheelBehavior === 'zoom'} onClick={() => updateWorkspaceSetting('scrollWheelBehavior', 'zoom')} />
+          <OptionLine label="Scroll Workspace" description="Mouse wheel over workspace scrolls up or down." selected={scrollWheelBehavior === 'scroll'} onClick={() => updateWorkspaceSetting('scrollWheelBehavior', 'scroll')} />
+          <ToggleLine label="Reverse scroll direction" value={workspace.reverseScrollDirection ?? false} onChange={() => updateWorkspaceSetting('reverseScrollDirection', !(workspace.reverseScrollDirection ?? false))} />
+        </SettingsFloatingMenu>
+      ) : null}
+
+      {activeMenu === 'doubleClick' ? (
+        <SettingsFloatingMenu position={floatingPosition}>
+          <div className="lt-submenu-title">Double-Click Options</div>
+          <OptionLine label="Select Excerpt Group" description="When double-clicking an excerpt, select the excerpt group." selected={excerptDoubleClickAction === 'selectGroup'} onClick={() => updateWorkspaceSetting('excerptDoubleClickAction', 'selectGroup')} />
+          <OptionLine label="Follow Source Link" description="When double-clicking an excerpt, follow the source link." selected={excerptDoubleClickAction === 'followLink'} onClick={() => updateWorkspaceSetting('excerptDoubleClickAction', 'followLink')} />
+        </SettingsFloatingMenu>
+      ) : null}
+
+      {activeMenu === 'penScrolling' ? (
+        <SettingsFloatingMenu position={floatingPosition}>
+          <div className="lt-submenu-title">Pen Scrolling Options</div>
+          <OptionLine label="Scroll by Default" description="In Text Select mode, pen scrolls by default. Hold to select text." selected={penScrollingBehavior === 'scrollByDefault'} onClick={() => updateWorkspaceSetting('penScrollingBehavior', 'scrollByDefault')} />
+          <OptionLine label="Select by Default" description="In Text Select mode, pen selects text by default." selected={penScrollingBehavior === 'selectByDefault'} onClick={() => updateWorkspaceSetting('penScrollingBehavior', 'selectByDefault')} />
+        </SettingsFloatingMenu>
+      ) : null}
+
+      {showTagManager ? (
+        <Modal title="Tag Manager" onClose={() => setShowTagManager(false)}>
+          <ImprovedTagManagerModal workspace={workspace} record={record} onUpdateWorkspace={onUpdateWorkspace} onClose={() => setShowTagManager(false)} />
+        </Modal>
+      ) : null}
+    </>
+  )
+
+}
+
+type LtSettingsMenu =
+  | null
+  | 'definedTerms'
+  | 'sync'
+  | 'workspaceLocation'
+  | 'multipleWorkspaceLayout'
+  | 'multipleDocumentLayout'
+  | 'lockWorkspace'
+  | 'linkReferenceStyle'
+  | 'scrollWheel'
+  | 'doubleClick'
+  | 'penScrolling'
+
+function SettingsSection({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="lt-settings-section">
+      <div className="lt-settings-section-title">{title}</div>
+      <div className="lt-settings-section-body">{children}</div>
+    </section>
+  )
+}
+
+function SettingsRow({
+  icon,
+  label,
+  active,
+  hasChevron,
+  toggleValue,
+  onToggle,
+  onClick
+}: {
+  icon: ReactNode
+  label: string
+  active?: boolean
+  hasChevron?: boolean
+  toggleValue?: boolean
+  onToggle?: () => void
+  onClick?: (event: ReactMouseEvent<HTMLButtonElement>) => void
+}) {
+  const isToggle = typeof toggleValue === 'boolean'
+  return (
+    <button type="button" className={`lt-settings-row ${active ? 'is-active' : ''}`} onClick={isToggle ? onToggle : onClick}>
+      <span className="lt-settings-icon">{icon}</span>
+      <span className="lt-settings-label">{label}</span>
+      {isToggle ? (
+        <span className={`lt-settings-toggle ${toggleValue ? 'is-on' : ''}`}><span /></span>
+      ) : hasChevron ? (
+        <span className="lt-settings-chevron">›</span>
+      ) : null}
+    </button>
+  )
+}
+
+function SettingsFloatingMenu({
+  className = '',
+  position,
+  children
+}: {
+  className?: string
+  position: { top: number; right: number }
+  children: ReactNode
+}) {
+  return (
+    <div className={`lt-floating-menu ${className}`} style={{ top: position.top, right: position.right }}>
+      {children}
+    </div>
+  )
+}
+
+function OptionLine({
+  icon,
+  label,
+  description,
+  selected,
+  onClick
+}: {
+  icon?: ReactNode
+  label: string
+  description?: string
+  selected?: boolean
+  onClick: () => void
+}) {
+  return (
+    <button type="button" className={`lt-option-row ${selected ? 'is-selected' : ''}`} onClick={onClick}>
+      <span>
+        {icon ? <span className="lt-option-icon">{icon}</span> : null}
+        <span className="lt-option-label">{label}</span>
+        {description ? <span className="lt-option-description">{description}</span> : null}
+      </span>
+      {selected ? <span className="lt-checkmark">✓</span> : null}
+    </button>
+  )
+}
+
+function ActionLine({
+  title,
+  description,
+  active,
+  onClick
+}: {
+  title: string
+  description?: string
+  active?: boolean
+  onClick: () => void
+}) {
+  return (
+    <button type="button" className={`lt-action-row ${active ? 'is-selected' : ''}`} onClick={onClick}>
+      <span>
+        <span className="lt-action-title">{title}</span>
+        {description ? <span className="lt-action-description">{description}</span> : null}
+      </span>
+      {active ? <span className="lt-checkmark">✓</span> : null}
+    </button>
+  )
+}
+
+function ToggleLine({
+  label,
+  description,
+  value,
+  onChange
+}: {
+  label: string
+  description?: string
+  value: boolean
+  onChange: () => void
+}) {
+  return (
+    <button type="button" className="lt-toggle-line" onClick={onChange}>
+      <span>
+        <span className="lt-option-label">{label}</span>
+        {description ? <span className="lt-option-description">{description}</span> : null}
+      </span>
+      <span className={`lt-settings-toggle ${value ? 'is-on' : ''}`}><span /></span>
+    </button>
+  )
+}
+
+
+function PageEditPanel({
+  pageCount,
+  currentPage,
+  deletedPages,
+  rotations,
+  onGoToPage,
+  onRotateCurrent,
+  onRotateAll,
+  onInsertPage,
+  onDeletePage,
+  onExtractPage
+}: {
+  pageCount: number
+  currentPage: number
+  deletedPages: Set<number>
+  rotations: Record<number, number>
+  onGoToPage: (pageNumber: number) => void
+  onRotateCurrent: (degrees: 90 | -90 | 180, pageNumber: number) => void
+  onRotateAll: (degrees: 90 | -90 | 180) => void
+  onInsertPage: (pageNumber: number) => void
+  onDeletePage: (pageNumber: number) => void
+  onExtractPage: (pageNumber: number) => void
+}) {
+  const [selectedPage, setSelectedPage] = useState(currentPage)
+  const [actionMode, setActionMode] = useState<'insert' | 'edit' | 'delete' | 'rotate'>('rotate')
+  const selectedRotation = rotations[selectedPage] ?? 0
+  const selectedDeleted = deletedPages.has(selectedPage)
+
+  return (
+    <div className="mobile-page-editor-modal">
+      <div className="mobile-page-editor-content">
+        <div className="mobile-page-editor-top">
+          <div>
+            <span className="mobile-page-editor-kicker">Selected</span>
+            <strong>Page {selectedPage}</strong>
+            <small>{selectedDeleted ? 'Marked deleted' : `${selectedRotation}° rotation`}</small>
+          </div>
+          <div className="mobile-page-editor-mode-tabs" role="tablist" aria-label="Page edit actions">
+            {(['insert', 'edit', 'delete', 'rotate'] as const).map((mode) => (
+              <button key={mode} className={actionMode === mode ? 'is-active' : ''} type="button" onClick={() => setActionMode(mode)}>
+                {mode[0].toUpperCase() + mode.slice(1)}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="mobile-page-editor-pages" aria-label="Pages">
+          {Array.from({ length: pageCount }, (_, index) => {
+            const pageNumber = index + 1
+            const isDeleted = deletedPages.has(pageNumber)
+            return (
+              <button key={pageNumber} className={`mobile-page-card${pageNumber === selectedPage ? ' is-active' : ''}${isDeleted ? ' is-deleted' : ''}`} type="button" onClick={() => { setSelectedPage(pageNumber); onGoToPage(pageNumber) }}>
+                <strong>{pageNumber}</strong>
+                <span>{isDeleted ? 'Deleted' : rotations[pageNumber] ? `${rotations[pageNumber]}°` : 'Ready'}</span>
+              </button>
+            )
+          })}
+        </div>
+        <section className="mobile-page-editor-section">
+          <h4>{actionMode === 'rotate' ? 'Rotate Pages' : actionMode === 'insert' ? 'Insert Pages' : actionMode === 'delete' ? 'Delete Pages' : 'Edit Pages'}</h4>
+          {actionMode === 'rotate' ? (
+            <>
+              <div className="mobile-page-editor-actions">
+                <button type="button" onClick={() => onRotateCurrent(90, selectedPage)}>Rotate 90° Clockwise</button>
+                <button type="button" onClick={() => onRotateCurrent(-90, selectedPage)}>Rotate 90° Anticlockwise</button>
+                <button type="button" onClick={() => onRotateCurrent(180, selectedPage)}>Rotate 180° Clockwise</button>
+                <button type="button" onClick={() => onRotateAll(90)}>Apply to All Pages (90° CW)</button>
+              </div>
+              <p className="mobile-settings-hint">Selected page rotation: {selectedRotation}°</p>
+            </>
+          ) : actionMode === 'insert' ? (
+            <>
+              <button className="mobile-primary-button" type="button" onClick={() => onInsertPage(selectedPage)}>Insert Blank Page After {selectedPage}</button>
+              <p className="mobile-settings-hint">Creates an insert-page edit entry after the selected page.</p>
+            </>
+          ) : actionMode === 'delete' ? (
+            <>
+              <button className="mobile-primary-button mobile-danger-button" type="button" onClick={() => onDeletePage(selectedPage)}>Delete Page {selectedPage}</button>
+              <p className="mobile-settings-hint">Marks this page deleted in the edit manifest.</p>
+            </>
+          ) : (
+            <>
+              <button className="mobile-primary-button" type="button" onClick={() => onExtractPage(selectedPage)}>Extract Page {selectedPage}</button>
+              <p className="mobile-settings-hint">Creates a small extraction manifest for this page.</p>
+            </>
+          )}
+        </section>
+      </div>
+    </div>
+  )
+}
+
+function ImprovedTagManagerModal({
+  workspace,
+  record,
+  onUpdateWorkspace,
+  onClose
+}: {
+  workspace: MobileWorkspaceState
+  record: MobileDocumentRecord
+  onUpdateWorkspace: (updater: (current: MobileWorkspaceState) => MobileWorkspaceState) => void
+  onClose: () => void
+}) {
+  const [category, setCategory] = useState('')
+  const [name, setName] = useState('')
+  const [color, setColor] = useState('#c8ff8a')
+  const [editingTagId, setEditingTagId] = useState<string | null>(null)
+  const [editCategory, setEditCategory] = useState('')
+  const [editName, setEditName] = useState('')
+  const tags = workspace.globalTags ?? []
+  const taggedAnchors = workspace.anchors
+    .filter((anchor) => anchor.documentId === record.document.id && (anchor.tags?.length ?? 0) > 0)
+    .flatMap((anchor) => (anchor.tags ?? []).map((tag) => ({
+      id: `${anchor.id}-${tag}`,
+      tag,
+      color: getTagColor(tag),
+      pageNumber: anchor.pageNumber,
+      text: cleanTagSentence(anchor.textQuote)
+    })))
+  const taggedNodes = workspace.nodes
+    .filter((node) => node.documentId === record.document.id && (node.tags?.length ?? 0) > 0)
+    .flatMap((node) => (node.tags ?? []).map((tag) => ({
+      id: `${node.id}-${tag}`,
+      tag,
+      color: node.nodeColor ?? node.selectionColor ?? '#c8ff8a',
+      pageNumber: undefined,
+      text: cleanTagSentence(node.text || node.title || 'Workspace note')
+    })))
+  const documentTagAllocations = [...taggedAnchors, ...taggedNodes]
+
+  function addTag() {
+    const nextCategory = category.trim()
+    const nextName = name.trim()
+    if (!nextCategory || !nextName) return
+    const now = new Date().toISOString()
+    const tag: TagDefinition = {
+      id: crypto.randomUUID(),
+      category: nextCategory,
+      name: nextName,
+      color,
+      createdAt: now,
+      updatedAt: now
+    }
+    onUpdateWorkspace((current) => ({
+      ...current,
+      globalTags: [...(current.globalTags ?? []), tag],
+      updatedAt: now
+    }))
+    setCategory('')
+    setName('')
+  }
+
+  function startEditing(tag: TagDefinition) {
+    setEditingTagId(tag.id)
+    setEditCategory(tag.category)
+    setEditName(tag.name)
+  }
+
+  function saveEditing() {
+    const nextCategory = editCategory.trim()
+    const nextName = editName.trim()
+    if (!editingTagId || !nextCategory || !nextName) return
+    const now = new Date().toISOString()
+    onUpdateWorkspace((current) => ({
+      ...current,
+      globalTags: (current.globalTags ?? []).map((tag) =>
+        tag.id === editingTagId ? { ...tag, category: nextCategory, name: nextName, updatedAt: now } : tag
+      ),
+      updatedAt: now
+    }))
+    setEditingTagId(null)
+    setEditCategory('')
+    setEditName('')
+  }
+
+  function deleteTag(tagId: string) {
+    onUpdateWorkspace((current) => ({
+      ...current,
+      globalTags: (current.globalTags ?? []).filter((tag) => tag.id !== tagId),
+      updatedAt: new Date().toISOString()
+    }))
+  }
+
+  return (
+    <div className="lt-tag-manager-content">
+      <div className="lt-tag-manager-body">
+      <section className="tag-manager-create">
+        <h4>Create New Tag</h4>
+        <div className="tag-manager-form">
+          <input className="tag-color-input" type="color" aria-label="Tag color" value={color} onChange={(e) => setColor(e.target.value)} />
+          <input value={category} placeholder="Category" onChange={(e) => setCategory(e.target.value)} />
+          <input value={name} placeholder="Name" onChange={(e) => setName(e.target.value)} />
+          <button className="tag-add-button" type="button" onClick={addTag}>Add</button>
+        </div>
+      </section>
+      <section className="tag-manager-edit">
+        <h4>Edit Existing tags</h4>
+        <div className="tag-manager-list">
+          {tags.length === 0 && <p className="empty-message">No tags created yet.</p>}
+          {tags.map((tag) => (
+            <div key={tag.id} className="tag-manager-item">
+              {editingTagId === tag.id ? (
+                <>
+                  <span className="tag-color-chip" style={{ background: tag.color ?? '#c8ff8a' }} />
+                  <input value={editCategory} onChange={(e) => setEditCategory(e.target.value)} />
+                  <input value={editName} onChange={(e) => setEditName(e.target.value)} />
+                  <button onClick={saveEditing}>Save</button>
+                  <button onClick={() => setEditingTagId(null)}>Cancel</button>
+                </>
+              ) : (
+                <>
+                  <span className="tag-color-chip" style={{ background: tag.color ?? '#c8ff8a' }} />
+                  <strong>{tag.category}</strong>
+                  <span>{tag.name}</span>
+                  <button onClick={() => startEditing(tag)}>Edit</button>
+                  <button onClick={() => deleteTag(tag.id)}>Delete</button>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      </section>
+      <section className="tag-manager-document-tags">
+        <h4>Tags in this document</h4>
+        <div className="tag-manager-allocation-list">
+          {documentTagAllocations.length === 0 && <p className="empty-message">No document text tagged yet.</p>}
+          {documentTagAllocations.map((entry) => (
+            <div key={entry.id} className="tag-manager-allocation-item">
+              <span className="tag-color-chip" style={{ background: entry.color }} />
+              <strong>{tagDisplayLabel(entry.tag)}</strong>
+              <span className="tag-manager-allocation-text">
+                {entry.pageNumber ? `Page ${entry.pageNumber} · ` : ''}{entry.text}
+              </span>
+            </div>
+          ))}
+        </div>
+      </section>
+      </div>
+      <div className="lt-tag-manager-footer">
+        <button type="button" onClick={onClose}>Save</button>
+        <button type="button" onClick={onClose}>Cancel</button>
+      </div>
+    </div>
+  )
+}
+
+
+function ImprovedDefinedTermsModal({
+  workspace,
+  onUpdateWorkspace,
+  onClose
+}: {
+  workspace: MobileWorkspaceState
+  onUpdateWorkspace: (updater: (current: MobileWorkspaceState) => MobileWorkspaceState) => void
+  onClose: () => void
+}) {
+  return (
+    <div className="improved-modal-content">
+      <div className="defined-row">
+        <label className="toggle-switch">
+          <input
+            type="checkbox"
+            checked={workspace.showDefinedTermsAttachments ?? true}
+            onChange={(e) => onUpdateWorkspace((current) => ({ ...current, showDefinedTermsAttachments: e.target.checked, updatedAt: new Date().toISOString() }))}
+          />
+          <span className="toggle-slider"></span>
+          <span className="toggle-label">Show Defined Terms, Attachments</span>
+        </label>
+        <span className="badge-disabled">Parsing Disabled</span>
+      </div>
+      <p className="settings-hint">Term extraction and attachment detection are ready for UI review; parsing logic can be connected later.</p>
+      <div className="modal-footer">
+        <button className="mobile-secondary-button" onClick={onClose}>Close</button>
+      </div>
+    </div>
+  )
+}
+
+function ImprovedScrollWheelOptionsPopup({
+  workspace,
+  onUpdateWorkspace,
+  onClose
+}: {
+  workspace: MobileWorkspaceState
+  onUpdateWorkspace: (updater: (current: MobileWorkspaceState) => MobileWorkspaceState) => void
+  onClose: () => void
+}) {
+  const behavior = workspace.scrollWheelBehavior ?? 'zoom'
+
+  return (
+    <div className="improved-popup-content">
+      <div className="radio-group-stack">
+        <label className="radio-card">
+          <input type="radio" checked={behavior === 'zoom'} onChange={() => onUpdateWorkspace((c) => ({ ...c, scrollWheelBehavior: 'zoom', updatedAt: new Date().toISOString() }))} />
+          <div>
+            <strong>Zoom Workspace</strong>
+            <span>When moving the scroll-wheel on your mouse while over the workspace, the workspace will zoom in or out.</span>
+          </div>
+        </label>
+        <label className="radio-card">
+          <input type="radio" checked={behavior === 'scroll'} onChange={() => onUpdateWorkspace((c) => ({ ...c, scrollWheelBehavior: 'scroll', updatedAt: new Date().toISOString() }))} />
+          <div>
+            <strong>Scroll Workspace</strong>
+            <span>When moving the scroll-wheel on your mouse while over the workspace, the workspace will scroll up or down.</span>
+          </div>
+        </label>
+      </div>
+      <label className="toggle-switch">
+        <input type="checkbox" checked={workspace.reverseScrollDirection ?? false} onChange={(e) => onUpdateWorkspace((c) => ({ ...c, reverseScrollDirection: e.target.checked, updatedAt: new Date().toISOString() }))} />
+        <span className="toggle-slider"></span>
+        <span className="toggle-label">Reverse scroll direction</span>
+      </label>
+      <div className="modal-footer">
+        <button className="mobile-secondary-button" onClick={onClose}>Close</button>
+      </div>
+    </div>
+  )
+}
+
+function ImprovedExcerptDoubleClickPopup({
+  workspace,
+  onUpdateWorkspace,
+  onClose
+}: {
+  workspace: MobileWorkspaceState
+  onUpdateWorkspace: (updater: (current: MobileWorkspaceState) => MobileWorkspaceState) => void
+  onClose: () => void
+}) {
+  const action = workspace.excerptDoubleClickAction ?? 'selectGroup'
+
+  return (
+    <div className="improved-popup-content">
+      <div className="radio-group-stack">
+        <label className="radio-card">
+          <input type="radio" checked={action === 'selectGroup'} onChange={() => onUpdateWorkspace((c) => ({ ...c, excerptDoubleClickAction: 'selectGroup', updatedAt: new Date().toISOString() }))} />
+          <div>
+            <strong>Select Excerpt Group</strong>
+            <span>When double-clicking an excerpt, select the excerpt group.</span>
+          </div>
+        </label>
+        <label className="radio-card">
+          <input type="radio" checked={action === 'followLink'} onChange={() => onUpdateWorkspace((c) => ({ ...c, excerptDoubleClickAction: 'followLink', updatedAt: new Date().toISOString() }))} />
+          <div>
+            <strong>Follow Source Link</strong>
+            <span>When double-clicking an excerpt, follow the source link.</span>
+          </div>
+        </label>
+      </div>
+      <div className="modal-footer">
+        <button className="mobile-secondary-button" onClick={onClose}>Close</button>
+      </div>
+    </div>
+  )
+}
+
+function ImprovedPenScrollingPopup({
+  workspace,
+  onUpdateWorkspace,
+  onClose
+}: {
+  workspace: MobileWorkspaceState
+  onUpdateWorkspace: (updater: (current: MobileWorkspaceState) => MobileWorkspaceState) => void
+  onClose: () => void
+}) {
+  const behavior = workspace.penScrollingBehavior ?? 'scrollByDefault'
+
+  return (
+    <div className="improved-popup-content">
+      <div className="radio-group-stack">
+        <label className="radio-card">
+          <input type="radio" checked={behavior === 'scrollByDefault'} onChange={() => onUpdateWorkspace((c) => ({ ...c, penScrollingBehavior: 'scrollByDefault', updatedAt: new Date().toISOString() }))} />
+          <div>
+            <strong>Scroll by Default</strong>
+            <span>In Text Select mode, the pen will scroll the document by default. Hold for a moment to select text.</span>
+          </div>
+        </label>
+        <label className="radio-card">
+          <input type="radio" checked={behavior === 'selectByDefault'} onChange={() => onUpdateWorkspace((c) => ({ ...c, penScrollingBehavior: 'selectByDefault', updatedAt: new Date().toISOString() }))} />
+          <div>
+            <strong>Select by Default</strong>
+            <span>In Text Select mode, the pen will select text if you drag it over the document.</span>
+          </div>
+        </label>
+      </div>
+      <div className="modal-footer">
+        <button className="mobile-secondary-button" onClick={onClose}>Close</button>
+      </div>
+    </div>
+  )
+}
+
+function ImprovedChooseLayoutPopup({
+  workspace,
+  onUpdateWorkspace,
+  onClose
+}: {
+  workspace: MobileWorkspaceState
+  onUpdateWorkspace: (updater: (current: MobileWorkspaceState) => MobileWorkspaceState) => void
+  onClose: () => void
+}) {
+  const arrangement = workspace.workspaceArrangement ?? 'automatic'
+
+  return (
+    <div className="improved-popup-content">
+      <div className="radio-group-stack">
+        <label className="radio-card">
+          <input type="radio" checked={arrangement === 'horizontal'} onChange={() => onUpdateWorkspace((c) => ({ ...c, workspaceArrangement: 'horizontal', updatedAt: new Date().toISOString() }))} />
+          <div>
+            <strong>Arrange Horizontally</strong>
+            <span>Nodes will be placed side by side.</span>
+          </div>
+        </label>
+        <label className="radio-card">
+          <input type="radio" checked={arrangement === 'vertical'} onChange={() => onUpdateWorkspace((c) => ({ ...c, workspaceArrangement: 'vertical', updatedAt: new Date().toISOString() }))} />
+          <div>
+            <strong>Arrange Vertically</strong>
+            <span>Nodes will be stacked from top to bottom.</span>
+          </div>
+        </label>
+        <label className="radio-card">
+          <input type="radio" checked={arrangement === 'automatic'} onChange={() => onUpdateWorkspace((c) => ({ ...c, workspaceArrangement: 'automatic', updatedAt: new Date().toISOString() }))} />
+          <div>
+            <strong>Automatic</strong>
+            <span>Smart arrangement based on available space.</span>
+          </div>
+        </label>
+      </div>
+      <div className="modal-footer">
+        <button className="mobile-secondary-button" onClick={onClose}>Close</button>
+      </div>
+    </div>
+  )
+}
+
 function SelectionActionPopup({
   popup,
   bookmarked,
@@ -1614,15 +4006,17 @@ function SelectionActionPopup({
   const [moreOpen, setMoreOpen] = useState(false)
   const popupRef = useRef<HTMLElement | null>(null)
   const [position, setPosition] = useState({ left: popup.left, top: popup.top })
+  const [placement, setPlacement] = useState<SelectionPopupPlacement>('clamped')
   const [popupSize, setPopupSize] = useState({ width: 0, height: 0 })
   const swatches = ['#ff6b6b', '#2ecc71', '#5d5df6', '#ffd400', '#db38ff', '#00b8d9']
-  const tags = tagDraft.split(',').map((tag) => tag.trim()).filter(Boolean)
+  const tags = parseTagInput(tagDraft)
+  const allocatedTags = popup.tags
 
   useEffect(() => {
     setExpanded(false)
     setMoreOpen(false)
-    setTagDraft(popup.tags.join(', '))
-  }, [popup.selection.text, popup.tags])
+    setTagDraft(popup.tagDraft || popup.tags.join(', '))
+  }, [popup.selection.text, popup.tagDraft, popup.tags])
   
   useLayoutEffect(() => {
     const element = popupRef.current
@@ -1656,8 +4050,11 @@ function SelectionActionPopup({
       selectionRect: popup.selectionRect
     })
     setPosition((current) =>
-      Math.abs(current.left - next.left) < 0.5 && Math.abs(current.top - next.top) < 0.5 ? current : next
+      Math.abs(current.left - next.left) < 0.5 && Math.abs(current.top - next.top) < 0.5
+        ? current
+        : { left: next.left, top: next.top }
     )
+    setPlacement(next.placement)
   }, [popupSize, popup.left, popup.top, popup.selectionRect])
 
   function handleClearPointerDown(event: ReactPointerEvent<HTMLButtonElement>) {
@@ -1666,14 +4063,19 @@ function SelectionActionPopup({
     onClear()
   }
 
+  function commitPopupTags(nextTags = tags) {
+    onTags(nextTags)
+    setTagDraft(nextTags.join(', '))
+  }
+
   return (
-    <aside ref={popupRef} className={`mobile-selection-popup selection-action-popup ${expanded ? 'is-mobile-expanded' : 'is-mobile-compact'}`} style={{ left: position.left, top: position.top, borderColor: `${popup.color ?? '#5d5df6'}55`, boxShadow: `0 22px 45px ${popup.color ?? '#5d5df6'}22` }}>
+    <aside ref={popupRef} className={`mobile-selection-popup selection-action-popup ${expanded ? 'is-mobile-expanded' : 'is-mobile-compact'} is-placed-${placement}`} style={{ left: position.left, top: position.top, borderColor: `${popup.color ?? '#5d5df6'}55`, boxShadow: `0 22px 45px ${popup.color ?? '#5d5df6'}22` }}>
       <div className="selection-action-header">
         <div className="mobile-selection-actions selection-action-row">
           <button className="selection-action-pill selection-action-pill-primary" style={{ background: popup.color ?? '#5d5df6' }} type="button" onClick={onExcerpt}>Auto Excerpt</button>
           <button className="selection-action-pill" type="button" onClick={onComment}>Comment</button>
           <button className="selection-action-pill" type="button" onClick={onBookmark}>{bookmarked ? 'Remove Bookmark' : 'Bookmark'}</button>
-          <button className="selection-action-pill" type="button" onClick={() => setExpanded(true)}>Tag</button>
+          <button className="selection-action-pill" type="button" onClick={() => { setExpanded(true); commitPopupTags(tags) }}>Tag</button>
           <button className="selection-action-pill" type="button" onPointerDown={handleClearPointerDown}>Clear</button>
           <div className="selection-action-more">
             <button className="selection-action-pill" type="button" onClick={() => { setExpanded(true); setMoreOpen((current) => !current) }}>...</button>
@@ -1682,7 +4084,7 @@ function SelectionActionPopup({
                 <div className="selection-action-menu-inner">
                   <button className="selection-action-menu-item" type="button" onClick={onCopy}>Copy</button>
                   <button className="selection-action-menu-item" type="button" onClick={() => { onClearTags(); setTagDraft(''); setMoreOpen(false) }}>Clear Tags</button>
-                  <button className="selection-action-menu-item" type="button" onClick={() => { onTags(Array.from(new Set([...tags, 'defined-term']))); setMoreOpen(false) }}>Add Defined Term</button>
+                  <button className="selection-action-menu-item" type="button" onClick={() => { commitPopupTags(Array.from(new Set([...allocatedTags, 'defined-term']))); setMoreOpen(false) }}>Add Defined Term</button>
                 </div>
               </div>
             ) : null}
@@ -1702,19 +4104,69 @@ function SelectionActionPopup({
               value={tagDraft}
               placeholder="important, evidence"
               onChange={(event) => setTagDraft(event.target.value)}
-              onBlur={() => onTags(tags)}
               onKeyDown={(event) => {
-                if (event.key === 'Enter') onTags(tags)
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  commitPopupTags(tags)
+                }
               }}
             />
           </label>
+        </div>
+        <div className="selection-action-tag-summary" aria-live="polite">
+          <div className="selection-action-tag-summary-label">Allocated tags</div>
+          {allocatedTags.length ? (
+            <div className="selection-action-tag-active-list">
+              {allocatedTags.map((tag) => (
+                <button key={tag} type="button" className="selection-action-tag-active" style={{ background: getTagColor(tag), borderColor: getTagColor(tag) }} onClick={() => commitPopupTags(allocatedTags.filter((entry) => entry !== tag))}>
+                  #{tag}<span>×</span>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="selection-action-tag-empty">No tags allocated</div>
+          )}
+          <div className="selection-action-tag-presets" aria-label="Suggested tags">
+            {TAG_PRESETS.map((tag) => {
+              const active = allocatedTags.includes(tag)
+              return (
+                <button key={tag} type="button" className={`selection-action-tag-preset${active ? ' is-active' : ''}`} onClick={() => {
+                  const next = active ? allocatedTags.filter((entry) => entry !== tag) : Array.from(new Set([...allocatedTags, tag]))
+                  commitPopupTags(next)
+                }}>
+                  #{tag}
+                </button>
+              )
+            })}
+          </div>
         </div>
       </div>
     </aside>
   )
 }
 
-type IconName = 'home' | 'back' | 'forward' | 'select' | 'pen' | 'highlighter' | 'eraser' | 'more' | 'textbox' | 'outline' | 'bookmark' | 'docs' | 'highlightView' | 'editPages'
+const TAG_PRESETS = ['important', 'question', 'evidence', 'counterpoint', 'defined-term', 'follow-up']
+
+function parseTagInput(value: string) {
+  return Array.from(new Set(value.split(',').map((tag) => tag.trim().replace(/^#/, '')).filter(Boolean)))
+}
+
+function getTagColor(tag: string) {
+  const normalized = tag.toLowerCase()
+  if (normalized.includes('important')) return '#ef4444'
+  if (normalized.includes('question')) return '#f59e0b'
+  if (normalized.includes('evidence')) return '#5d5df6'
+  if (normalized.includes('counterpoint')) return '#8b5cf6'
+  if (normalized.includes('defined')) return '#0ea5e9'
+  if (normalized.includes('follow')) return '#10b981'
+  return '#5d5df6'
+}
+
+function cleanTagSentence(value: string) {
+  return value.replace(/\s+/g, ' ').replace(/^[·\-\s]+/, '').trim()
+}
+
+type IconName = 'home' | 'back' | 'forward' | 'select' | 'pen' | 'pencil' | 'highlighter' | 'eraser' | 'undo' | 'trash' | 'close' | 'more' | 'textbox' | 'outline' | 'bookmark' | 'docs' | 'highlightView' | 'editPages'
 
 function Icon({ name }: { name: IconName }) {
   const common = { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, 'aria-hidden': true }
@@ -1722,8 +4174,12 @@ function Icon({ name }: { name: IconName }) {
   if (name === 'back') return <svg {...common}><path d="m15 18-6-6 6-6" /></svg>
   if (name === 'forward') return <svg {...common}><path d="m9 18 6-6-6-6" /></svg>
   if (name === 'pen') return <svg {...common}><path d="m12 20 9-9-4-4-9 9-2 6 6-2Z" /><path d="m15 8 1 1" /></svg>
+  if (name === 'pencil') return <svg {...common}><path d="m18 2 4 4" /><path d="m3 21 4.5-1 12-12-3.5-3.5-12 12L3 21Z" /><path d="m14 6 4 4" /></svg>
   if (name === 'highlighter') return <svg {...common}><path d="m9 11 6 6" /><path d="m4 20 4-1 10-10-3-3L5 16l-1 4Z" /><path d="m14 5 5 5" /></svg>
   if (name === 'eraser') return <svg {...common}><path d="m7 21-4-4 11-11 7 7-8 8H7Z" /><path d="M14 21h7" /></svg>
+  if (name === 'undo') return <svg {...common}><path d="M9 14 4 9l5-5" /><path d="M4 9h10a6 6 0 1 1-4.25 10.25" /></svg>
+  if (name === 'trash') return <svg {...common}><path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="m6 6 1 15h10l1-15" /><path d="M10 11v6" /><path d="M14 11v6" /></svg>
+  if (name === 'close') return <svg {...common}><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
   if (name === 'textbox') return <svg {...common}><path d="M4 20 10 4h4l6 16" /><path d="M7 14h10" /></svg>
   if (name === 'highlightView') return <svg {...common}><path d="m7 7-2 2-2-2" /><path d="M10 8h10" /><path d="m7 17-2-2-2 2" /><path d="M10 16h10" /></svg>
   if (name === 'editPages') return <svg {...common}><rect x="4" y="4" width="6" height="6" /><rect x="14" y="4" width="6" height="6" /><rect x="4" y="14" width="6" height="6" /><rect x="14" y="14" width="6" height="6" /></svg>
@@ -2176,6 +4632,87 @@ function buildUnionRect(rects: DOMRect[]) {
   return new DOMRect(left, top, right - left, bottom - top)
 }
 
+function updateReadableSelectionMagnifier(
+  root: HTMLElement | null,
+  selectionColor: string,
+  setMagnifier: (next: SourceSelectionMagnifierState | null) => void
+) {
+  const selection = document.getSelection()
+  if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+    setMagnifier(null)
+    return
+  }
+  const text = selection.toString().replace(/\s+/g, ' ').trim()
+  if (!text) {
+    setMagnifier(null)
+    return
+  }
+  if (!root) {
+    setMagnifier(null)
+    return
+  }
+  const range = selection.getRangeAt(0)
+  const startElement = range.startContainer instanceof Element ? range.startContainer : range.startContainer.parentElement
+  const endElement = range.endContainer instanceof Element ? range.endContainer : range.endContainer.parentElement
+  const belongsToRoot = Boolean(root && ((startElement && root.contains(startElement)) || (endElement && root.contains(endElement))))
+  if (!belongsToRoot || (!startElement?.closest('.mobile-readable-page') && !endElement?.closest('.mobile-readable-page'))) {
+    setMagnifier(null)
+    return
+  }
+
+  const selectionClientRects = Array.from(range.getClientRects()).filter((box) => box.width > 1 && box.height > 1)
+  const rect = buildUnionRect(selectionClientRects) ?? range.getBoundingClientRect()
+  if (!rect || rect.width <= 0 || rect.height <= 0) {
+    setMagnifier(null)
+    return
+  }
+  const rootRect = root.getBoundingClientRect()
+  const tallestSelectionLine = Math.max(...selectionClientRects.map((box) => box.height), rect.height)
+  const selectionLeft = selectionClientRects.length ? Math.min(...selectionClientRects.map((box) => box.left)) : rect.left
+  const selectionTop = selectionClientRects.length ? Math.min(...selectionClientRects.map((box) => box.top)) : rect.top
+  const selectionRight = selectionClientRects.length ? Math.max(...selectionClientRects.map((box) => box.right)) : rect.right
+  const loupeWidth = Math.min(Math.max(160, root.clientWidth - 24), Math.max(180, rect.width + 52))
+  const loupeMaxWidth = Math.min(Math.max(220, root.clientWidth - 24), 360)
+  const loupeFontSize = Math.max(18, Math.min(30, tallestSelectionLine * 1.18))
+  const loupeHeightEstimate = loupeFontSize * 2.7 + 28
+  const preferredLeft = selectionLeft + (selectionRight - selectionLeft) / 2 - loupeWidth / 2
+  const preferredAboveTop = selectionTop - loupeHeightEstimate - 8
+  const left = Math.max(rootRect.left + 12, Math.min(rootRect.right - loupeWidth - 12, preferredLeft))
+  const top = preferredAboveTop >= rootRect.top + 12
+    ? preferredAboveTop
+    : Math.min(rootRect.bottom - loupeHeightEstimate - 12, rect.bottom + 18)
+
+  setMagnifier({
+    text: text.length > 160 ? `${text.slice(0, 157)}...` : text,
+    left,
+    top: Math.max(12, top),
+    selectionColor,
+    width: loupeWidth,
+    maxWidth: loupeMaxWidth,
+    fontSize: loupeFontSize
+  })
+}
+
+function SourceSelectionMagnifierLens({ magnifier }: { magnifier: SourceSelectionMagnifierState }) {
+  const style = {
+    left: magnifier.left,
+    top: magnifier.top,
+    '--selection-loupe-width': `${magnifier.width}px`,
+    '--selection-loupe-max-width': `${magnifier.maxWidth}px`,
+    '--selection-loupe-font-size': `${magnifier.fontSize}px`,
+    borderColor: `${magnifier.selectionColor}66`,
+    boxShadow: `0 16px 28px ${magnifier.selectionColor}24`
+  } as CSSProperties
+
+  return (
+    <div className="document-selection-loupe" style={style}>
+      <div className="document-selection-loupe-copy" style={{ color: magnifier.selectionColor }}>
+        {magnifier.text}
+      </div>
+    </div>
+  )
+}
+
 function findAnnotatedPage(target: EventTarget | null) {
   return target instanceof Element ? target.closest<HTMLElement>('.mobile-annotated-page') : null
 }
@@ -2190,53 +4727,6 @@ function findSourceAnchorIdFromPointer(clientX: number, clientY: number) {
     }
   }
   return null
-}
-
-function resolveSelectionPopupPosition({
-  preferredLeft,
-  preferredTop,
-  popupWidth,
-  popupHeight,
-  viewportWidth,
-  viewportHeight,
-  selectionRect
-}: {
-  preferredLeft: number
-  preferredTop: number
-  popupWidth: number
-  popupHeight: number
-  viewportWidth: number
-  viewportHeight: number
-  selectionRect?: SelectionRect
-}) {
-  const margin = 12
-  const gap = 12
-  const left = clampValue(preferredLeft, margin, Math.max(margin, viewportWidth - popupWidth - margin))
-  if (!selectionRect) {
-    return { left, top: clampValue(preferredTop, margin, Math.max(margin, viewportHeight - popupHeight - margin)) }
-  }
-
-  const belowTop = selectionRect.bottom + gap
-  const aboveTop = selectionRect.top - popupHeight - gap
-  const canPlaceBelow = belowTop + popupHeight <= viewportHeight - margin
-  const canPlaceAbove = aboveTop >= margin
-  let top = canPlaceBelow ? belowTop : canPlaceAbove ? aboveTop : clampValue(belowTop, margin, Math.max(margin, viewportHeight - popupHeight - margin))
-
-  const overlaps = !(
-    left + popupWidth <= selectionRect.left ||
-    left >= selectionRect.right ||
-    top + popupHeight <= selectionRect.top ||
-    top >= selectionRect.bottom
-  )
-
-  if (overlaps && canPlaceAbove) top = aboveTop
-  else if (overlaps && canPlaceBelow) top = belowTop
-
-  return { left, top: clampValue(top, margin, Math.max(margin, viewportHeight - popupHeight - margin)) }
-}
-
-function clampValue(value: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, value))
 }
 
 function findAnnotatedPageFromPointer(event: React.PointerEvent<HTMLElement>) {

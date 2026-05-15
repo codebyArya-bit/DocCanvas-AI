@@ -76,6 +76,24 @@ export interface MobileWorkspaceState {
   inkStrokes?: InkStroke[]
   sourceBookmarks?: SourceBookmark[]
   pageEdits?: PageEdit[]
+  globalTags?: TagDefinition[]
+  definedTermsEnabled?: boolean
+  showDefinedTermsAttachments?: boolean
+  findUndefinedTerms?: boolean
+  findOverdefinedTerms?: boolean
+  underlineDefinedTerms?: boolean
+  underlineExhibits?: boolean
+  linkAcrossDocuments?: boolean
+  scrollWheelBehavior?: 'zoom' | 'scroll'
+  reverseScrollDirection?: boolean
+  excerptDoubleClickAction?: 'selectGroup' | 'followLink'
+  useFingerForInking?: boolean
+  penScrollingBehavior?: 'scrollByDefault' | 'selectByDefault'
+  linkReferenceStyle?: string
+  limitProjectDocLength?: boolean
+  abbreviateDocumentName?: boolean
+  encloseInParenthesis?: boolean
+  workspaceArrangement?: 'horizontal' | 'vertical' | 'automatic'
   activeHighlightGroupId?: string | null
   activeAnchorId?: string | null
   activeNodeId?: string | null
@@ -111,6 +129,7 @@ export type MobileViewerState = {
   zoom?: number
   scrollPosition: number
   activePage: number
+  pageRotations?: Record<number, number>
 }
 
 export type MobileViewerLayout = {
@@ -119,6 +138,10 @@ export type MobileViewerLayout = {
   toolRailSide: 'left' | 'right'
   workspaceLocked?: boolean
   autoPositionComments?: boolean
+  leftHandLayout?: boolean
+  workspaceLocationRight?: boolean
+  multipleWorkspaceLayout?: boolean
+  multipleDocumentLayout?: boolean
 }
 
 export type MobileAppSettings = {
@@ -163,6 +186,7 @@ export type TextHighlight = {
 export type FreeformHighlight = {
   id: string
   documentId: string
+  surface?: 'source' | 'source-pane' | 'workspace'
   pageNumber?: number
   points: NormalizedPoint[]
   color: string
@@ -181,11 +205,13 @@ export type SourceTextbox = {
   widthNorm?: number
   heightNorm?: number
   content: string
+  textStyle?: import('@workspace/domain').TextStyle
 }
 
 export type InkStroke = {
   id: string
   documentId: string
+  surface?: 'source' | 'source-pane' | 'workspace'
   pageNumber?: number
   tool?: 'pen' | 'pencil'
   points: NormalizedPoint[]
@@ -209,6 +235,15 @@ export type PageEdit = {
   pageNumber: number
   action: 'insert' | 'delete' | 'rotate'
   rotation?: 90 | -90 | 180
+}
+
+export type TagDefinition = {
+  id: string
+  category: string
+  name: string
+  color?: string
+  createdAt: string
+  updatedAt?: string
 }
 
 export type WorkspacePatch = {
@@ -397,6 +432,24 @@ export function normalizeMobileWorkspaceState(
     inkStrokes: (state?.inkStrokes ?? []).map((stroke) => ({ ...stroke, tool: stroke.tool ?? 'pen' })),
     sourceBookmarks: state?.sourceBookmarks ?? [],
     pageEdits: state?.pageEdits ?? [],
+    globalTags: state?.globalTags ?? [],
+    definedTermsEnabled: state?.definedTermsEnabled ?? false,
+    showDefinedTermsAttachments: state?.showDefinedTermsAttachments ?? true,
+    findUndefinedTerms: state?.findUndefinedTerms ?? false,
+    findOverdefinedTerms: state?.findOverdefinedTerms ?? false,
+    underlineDefinedTerms: state?.underlineDefinedTerms ?? false,
+    underlineExhibits: state?.underlineExhibits ?? false,
+    linkAcrossDocuments: state?.linkAcrossDocuments ?? false,
+    scrollWheelBehavior: state?.scrollWheelBehavior ?? 'zoom',
+    reverseScrollDirection: state?.reverseScrollDirection ?? false,
+    excerptDoubleClickAction: state?.excerptDoubleClickAction ?? 'selectGroup',
+    useFingerForInking: state?.useFingerForInking ?? false,
+    penScrollingBehavior: state?.penScrollingBehavior ?? 'scrollByDefault',
+    linkReferenceStyle: state?.linkReferenceStyle ?? '(BA, 3)',
+    limitProjectDocLength: state?.limitProjectDocLength ?? false,
+    abbreviateDocumentName: state?.abbreviateDocumentName ?? false,
+    encloseInParenthesis: state?.encloseInParenthesis ?? false,
+    workspaceArrangement: state?.workspaceArrangement ?? 'automatic',
     activeHighlightGroupId: state?.activeHighlightGroupId ?? null,
     activeAnchorId: state?.activeAnchorId ?? null,
     activeNodeId: state?.activeNodeId ?? null,
@@ -451,7 +504,11 @@ export function normalizeViewerLayout(layout?: Partial<MobileViewerLayout>): Mob
     sourceToolsOpen: layout?.sourceToolsOpen ?? false,
     toolRailSide: layout?.toolRailSide ?? 'left',
     workspaceLocked: layout?.workspaceLocked ?? false,
-    autoPositionComments: layout?.autoPositionComments ?? true
+    autoPositionComments: layout?.autoPositionComments ?? true,
+    leftHandLayout: layout?.leftHandLayout ?? false,
+    workspaceLocationRight: layout?.workspaceLocationRight ?? true,
+    multipleWorkspaceLayout: layout?.multipleWorkspaceLayout ?? true,
+    multipleDocumentLayout: layout?.multipleDocumentLayout ?? false
   }
 }
 
@@ -462,7 +519,8 @@ export function getDocumentViewerState(state: MobileWorkspaceState, documentId: 
     sourceZoom: clamp(existing?.sourceZoom ?? existing?.zoom ?? 1, 0.3, 3),
     workspaceZoom: clamp(existing?.workspaceZoom ?? state.workspaceViewport.workspaceZoom ?? state.workspaceViewport.zoom ?? 1, 0.3, 3),
     scrollPosition: existing?.scrollPosition ?? 0,
-    activePage: existing?.activePage ?? 1
+    activePage: existing?.activePage ?? 1,
+    pageRotations: existing?.pageRotations ?? {}
   }
 }
 

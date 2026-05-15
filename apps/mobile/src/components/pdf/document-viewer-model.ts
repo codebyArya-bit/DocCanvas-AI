@@ -17,15 +17,19 @@ export { buildPageAnchor, type SelectionArtifactInput }
 
 export type ViewerLayoutMode = 'desktop' | 'compact' | 'mobile'
 
+const EXTREME_SPLIT_MIN = 0.02
+const EXTREME_SPLIT_MAX = 0.98
+
 export const clampViewerZoom = (value: number) => Math.max(0.3, Math.min(3, Number(value.toFixed(2))))
-export const clampSplitRatio = (value: number) => Math.max(0.28, Math.min(0.72, Number(value.toFixed(3))))
+export const clampSplitRatio = (value: number) => Math.max(EXTREME_SPLIT_MIN, Math.min(EXTREME_SPLIT_MAX, Number(value.toFixed(3))))
 export const resetSplitRatio = () => 0.54
+export const getPageRotation = (viewerState: MobileViewerState, pageNumber: number) => viewerState.pageRotations?.[pageNumber] ?? 0
 
 export function viewerGridTemplateColumns(splitRatio: number, layoutMode: ViewerLayoutMode) {
   const ratio = clampSplitRatio(splitRatio)
   if (layoutMode === 'mobile') return 'minmax(0, 1fr)'
-  if (layoutMode === 'compact') return `96px minmax(260px, ${ratio}fr) 10px minmax(260px, ${1 - ratio}fr)`
-  return `112px minmax(320px, ${ratio}fr) 10px minmax(320px, ${1 - ratio}fr)`
+  if (layoutMode === 'compact') return `96px minmax(28px, ${ratio}fr) 10px minmax(28px, ${1 - ratio}fr)`
+  return `112px minmax(28px, ${ratio}fr) 10px minmax(28px, ${1 - ratio}fr)`
 }
 
 export function commitViewerStatePatch(
@@ -38,7 +42,8 @@ export function commitViewerStatePatch(
     sourceZoom: 1,
     workspaceZoom: 1,
     scrollPosition: 0,
-    activePage: 1
+    activePage: 1,
+    pageRotations: {}
   }
   return {
     ...workspace,
@@ -146,9 +151,27 @@ export function applyBookmarkSelection(workspace: MobileWorkspaceState, selectio
 export function applyTagSelection(workspace: MobileWorkspaceState, selection: SelectionArtifactInput, tags: string[]) {
   const anchor = buildPageAnchor({ ...selection, tags })
   const now = new Date().toISOString()
+  const existingAnchor = workspace.anchors.find((entry) => entry.id === anchor.id)
+  const shouldRemoveAnchor = tags.length === 0 && !existingAnchor?.selectionColor && !workspace.nodes.some((node) => node.sourceAnchorId === anchor.id) && !workspace.bookmarks.some((bookmark) => bookmark.sourceAnchorId === anchor.id)
+  if (shouldRemoveAnchor) {
+    return {
+      ...workspace,
+      anchors: workspace.anchors.filter((entry) => entry.id !== anchor.id),
+      activeAnchorId: workspace.activeAnchorId === anchor.id ? null : workspace.activeAnchorId,
+      updatedAt: now
+    }
+  }
+
+  const nextAnchor = {
+    ...(existingAnchor ?? anchor),
+    ...anchor,
+    selectionColor: selection.selectionColor || existingAnchor?.selectionColor,
+    tags,
+    updatedAt: now
+  }
   return {
     ...workspace,
-    anchors: upsertById(workspace.anchors, anchor),
+    anchors: upsertById(workspace.anchors, nextAnchor),
     nodes: workspace.nodes.map((node) => (node.sourceAnchorId === anchor.id ? { ...node, tags, updatedAt: now } : node)),
     bookmarks: workspace.bookmarks.map((bookmark) => (bookmark.sourceAnchorId === anchor.id ? { ...bookmark, tags, updatedAt: now } : bookmark)),
     activeAnchorId: anchor.id,
@@ -172,6 +195,19 @@ export function applyRecolorSelection(workspace: MobileWorkspaceState, selection
 export function applyClearSelectionColor(workspace: MobileWorkspaceState, selection: SelectionArtifactInput) {
   const anchor = buildPageAnchor(selection)
   const now = new Date().toISOString()
+  
+  const isUsedByExcerpt = workspace.nodes.some(node => node.sourceAnchorId === anchor.id)
+  const isUsedByBookmark = workspace.bookmarks.some(b => b.sourceAnchorId === anchor.id)
+  
+  if (!isUsedByExcerpt && !isUsedByBookmark) {
+    return {
+      ...workspace,
+      anchors: workspace.anchors.filter(a => a.id !== anchor.id),
+      activeAnchorId: workspace.activeAnchorId === anchor.id ? null : workspace.activeAnchorId,
+      updatedAt: now
+    }
+  }
+
   return {
     ...workspace,
     anchors: workspace.anchors.map((entry) => (entry.id === anchor.id ? { ...entry, selectionColor: undefined, tags: [], updatedAt: now } : entry)),

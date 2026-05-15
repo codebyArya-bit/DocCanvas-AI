@@ -109,6 +109,65 @@ assert.equal(state.freeformHighlights?.length, 0)
 state = dispatchInteractionAction(state, { type: 'UNDO' })
 assert.equal(state.freeformHighlights?.length, 1)
 
+const pageClearState = dispatchInteractionAction(
+  workspace({
+    freeformHighlights: [
+      highlight,
+      { ...highlight, id: 'highlight-2', pageNumber: 2 },
+      { ...highlight, id: 'source-pane-highlight-1', pageNumber: undefined, surface: 'source-pane', points: [{ x: 0.1, y: 0.1 }, { x: 0.2, y: 0.2 }] },
+      { ...highlight, id: 'workspace-highlight-1', pageNumber: undefined, surface: 'workspace', points: [{ x: 120, y: 130 }, { x: 180, y: 160 }] }
+    ],
+    inkStrokes: [
+      stroke,
+      { ...stroke, id: 'ink-2', pageNumber: 2 },
+      { ...stroke, id: 'source-pane-ink-1', pageNumber: undefined, surface: 'source-pane', points: [{ x: 0.3, y: 0.3 }, { x: 0.4, y: 0.4 }] },
+      { ...stroke, id: 'workspace-ink-1', pageNumber: undefined, surface: 'workspace', points: [{ x: 100, y: 100 }, { x: 150, y: 150 }] }
+    ]
+  }),
+  { type: 'CLEAR_PAGE_INK', payload: { documentId: 'doc-1', pageNumber: 1 } }
+)
+assert.deepEqual(pageClearState.freeformHighlights?.map((entry) => entry.id), ['highlight-2', 'source-pane-highlight-1', 'workspace-highlight-1'])
+assert.deepEqual(pageClearState.inkStrokes?.map((entry) => entry.id), ['ink-2', 'source-pane-ink-1', 'workspace-ink-1'])
+assert.equal(pageClearState.historyPast?.length, 1)
+const restoredPageClearState = dispatchInteractionAction(pageClearState, { type: 'UNDO' })
+assert.equal(restoredPageClearState.freeformHighlights?.length, 4)
+assert.equal(restoredPageClearState.inkStrokes?.length, 4)
+
+state = dispatchInteractionAction(workspace(), {
+  type: 'ADD_INK_STROKE',
+  payload: { ...stroke, id: 'workspace-ink-add', pageNumber: undefined, surface: 'workspace', points: [{ x: 20, y: 20 }, { x: 40, y: 40 }] }
+})
+assert.equal(state.inkStrokes?.[0].surface, 'workspace')
+state = dispatchInteractionAction(workspace({
+  freeformHighlights: [{ ...highlight, id: 'workspace-highlight-erase', pageNumber: undefined, surface: 'workspace', points: [{ x: 200, y: 200 }, { x: 250, y: 250 }] }],
+  inkStrokes: [
+    { ...stroke, id: 'source-ink-safe', pageNumber: 1, surface: 'source', points: [{ x: 0.2, y: 0.2 }, { x: 0.25, y: 0.25 }] },
+    { ...stroke, id: 'workspace-ink-erase', pageNumber: undefined, surface: 'workspace', points: [{ x: 20, y: 20 }, { x: 40, y: 40 }] }
+  ]
+}), {
+  type: 'ERASE_WORKSPACE_INK_AT_POINT',
+  payload: { documentId: 'doc-1', point: { x: 20, y: 20 }, size: 20 }
+})
+assert.deepEqual(state.inkStrokes?.map((entry) => entry.id), ['source-ink-safe'])
+assert.equal(state.freeformHighlights?.length, 1)
+state = dispatchInteractionAction(state, { type: 'UNDO' })
+assert.equal(state.inkStrokes?.length, 2)
+
+state = dispatchInteractionAction(workspace({
+  freeformHighlights: [{ ...highlight, id: 'source-pane-highlight-erase', pageNumber: undefined, surface: 'source-pane', points: [{ x: 0.2, y: 0.2 }, { x: 0.25, y: 0.25 }] }],
+  inkStrokes: [
+    { ...stroke, id: 'source-page-safe', pageNumber: 1, surface: 'source', points: [{ x: 0.2, y: 0.2 }, { x: 0.25, y: 0.25 }] },
+    { ...stroke, id: 'source-pane-ink-erase', pageNumber: undefined, surface: 'source-pane', points: [{ x: 0.45, y: 0.45 }, { x: 0.5, y: 0.5 }] }
+  ]
+}), {
+  type: 'ERASE_SURFACE_INK_AT_POINT',
+  payload: { documentId: 'doc-1', surface: 'source-pane', point: { x: 0.45, y: 0.45 }, size: 24 }
+})
+assert.deepEqual(state.inkStrokes?.map((entry) => entry.id), ['source-page-safe'])
+assert.equal(state.freeformHighlights?.length, 1)
+state = dispatchInteractionAction(state, { type: 'UNDO' })
+assert.equal(state.inkStrokes?.length, 2)
+
 const anchor: PageAnchor = {
   id: 'anchor-1',
   workspaceId: 'workspace-test',

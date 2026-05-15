@@ -4,12 +4,14 @@ import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState
 } from 'react'
 import type { CanvasEdge, CanvasNode, TextStyle } from '@workspace/domain'
-import type { MobileWorkspaceLink, MobileWorkspaceViewport } from '../lib/mobile-store'
+import type { FreeformHighlight, InkStroke, MobileToolSettings, MobileWorkspaceLink, MobileWorkspaceViewport, NormalizedPoint, ToolMode } from '../lib/mobile-store'
+import { SharedTextboxToolbar } from './SharedTextboxToolbar'
 
 interface MobileWorkspaceCanvasProps {
   documentId: string
@@ -22,6 +24,13 @@ interface MobileWorkspaceCanvasProps {
   activeNodeId?: string | null
   linkLayoutKey?: string
   locked?: boolean
+  toolMode?: ToolMode
+  toolSettings?: MobileToolSettings
+  inkStrokes?: InkStroke[]
+  freeformHighlights?: FreeformHighlight[]
+  onWorkspaceInkStroke?: (stroke: InkStroke) => void
+  onWorkspaceFreeformHighlight?: (highlight: FreeformHighlight) => void
+  onWorkspaceEraseInk?: (point: NormalizedPoint, size: number) => void
   onNodesChange: (nodes: CanvasNode[]) => void
   onWorkspaceGraphChange?: (nodes: CanvasNode[], canvasEdges: CanvasEdge[]) => void
   onLinksChange: (links: MobileWorkspaceLink[]) => void
@@ -57,6 +66,9 @@ type NodeResizeDirection =
   | 'bottom-left'
   | 'bottom-right'
 
+const INFINITE_CANVAS_PADDING = 2400
+const MIN_NODE_POSITION = -INFINITE_CANVAS_PADDING
+
 type AnchorLinkLine = {
   id: string
   path: string
@@ -89,6 +101,9 @@ const PRESET_OPTIONS: Array<{ label: string; value: NonNullable<TextStyle['prese
 ]
 const MIN_WORKSPACE_ZOOM = 0.3
 const MAX_WORKSPACE_ZOOM = 3
+const WORKSPACE_CANVAS_SURFACE_WIDTH = 2200
+const WORKSPACE_CANVAS_SURFACE_HEIGHT = 1800
+const WORKSPACE_INK_TOOL_MODES = new Set<ToolMode>(['pen', 'pencil', 'freeform-highlight', 'eraser'])
 
 export function parseWorkspaceToolbarTags(value: string) {
   return value.split(',').map((tag) => tag.trim()).filter(Boolean)
@@ -170,6 +185,13 @@ export function MobileWorkspaceCanvas({
   activeNodeId,
   linkLayoutKey,
   locked = false,
+  toolMode = 'select',
+  toolSettings,
+  inkStrokes = [],
+  freeformHighlights = [],
+  onWorkspaceInkStroke,
+  onWorkspaceFreeformHighlight,
+  onWorkspaceEraseInk,
   onNodesChange,
   onWorkspaceGraphChange,
   onLinksChange,
@@ -194,6 +216,13 @@ export function MobileWorkspaceCanvas({
   const parsedToolbarTags = useMemo(() => parseWorkspaceToolbarTags(tagsDraft), [tagsDraft])
   const [toolbarNodeId, setToolbarNodeId] = useState<string | null>(null)
   const [toolbarStatus, setToolbarStatus] = useState('')
+  const isWorkspaceInkMode = WORKSPACE_INK_TOOL_MODES.has(toolMode)
+  const workspaceInkStrokes = inkStrokes.filter((entry) => entry.surface === 'workspace' && entry.documentId === documentId)
+  const workspaceHighlights = freeformHighlights.filter((entry) => entry.surface === 'workspace' && entry.documentId === documentId)
+  const sharedToolbarLeft = activeNode
+    ? Math.max(8, Math.min(activeNode.x * viewport.workspaceZoom + viewport.panX, Math.max(8, linkLayerBounds.width - 620)))
+    : 8
+  const sharedToolbarTop = activeNode ? Math.max(8, activeNode.y * viewport.workspaceZoom + viewport.panY - 54) : 8
 
   async function writeClipboard(text: string, fallbackMessage = 'Clipboard blocked') {
     try {
@@ -307,6 +336,12 @@ export function MobileWorkspaceCanvas({
     updateNode(activeNode.id, { textStyle: { ...(activeNode.textStyle ?? {}), ...style } })
   }
 
+  function updateWorkspaceTextboxStyle(nodeId: string, style: Partial<TextStyle>) {
+    const node = nodes.find((entry) => entry.id === nodeId)
+    if (!node) return
+    updateNode(nodeId, { textStyle: { ...(node.textStyle ?? {}), ...style } })
+  }
+
   function copyNodeLink(node: CanvasNode) {
     void writeClipboard(buildWorkspaceNodeLinkText(node))
   }
@@ -412,6 +447,34 @@ export function MobileWorkspaceCanvas({
     }
   }
 
+  function commitWorkspaceDraft(kind: 'pen' | 'pencil' | 'freeform-highlight', points: NormalizedPoint[]) {
+    if (!toolSettings || points.length < 2) return
+    if (kind === 'freeform-highlight') {
+      onWorkspaceFreeformHighlight?.({
+        id: crypto.randomUUID(),
+        documentId,
+        surface: 'workspace',
+        points,
+        color: toolSettings.highlight.color,
+        size: toolSettings.highlight.size,
+        opacity: toolSettings.highlight.opacity,
+        smoothed: toolSettings.highlight.smoothed
+      })
+      return
+    }
+    const isPencil = kind === 'pencil'
+    onWorkspaceInkStroke?.({
+      id: crypto.randomUUID(),
+      documentId,
+      surface: 'workspace',
+      tool: isPencil ? 'pencil' : 'pen',
+      points,
+      color: isPencil ? toolSettings.pencil.color : toolSettings.pen.color,
+      size: isPencil ? toolSettings.pencil.size : toolSettings.pen.size,
+      opacity: isPencil ? toolSettings.pencil.opacity : undefined
+    })
+  }
+
   function resizeNodePatch(dragging: Extract<DragState, { kind: 'resize' }>, clientX: number, clientY: number): Partial<CanvasNode> {
     const dx = (clientX - dragging.startX) / viewport.workspaceZoom
     const dy = (clientY - dragging.startY) / viewport.workspaceZoom
@@ -437,7 +500,7 @@ export function MobileWorkspaceCanvas({
       y = dragging.nodeY + dragging.height - height
     }
 
-    return { x: Math.max(12, x), y: Math.max(12, y), width, height }
+    return { x: Math.max(MIN_NODE_POSITION, x), y: Math.max(MIN_NODE_POSITION, y), width, height }
   }
 
   useEffect(() => {
@@ -545,9 +608,9 @@ export function MobileWorkspaceCanvas({
   return (
     <section
       ref={surfaceRef}
-      className={`mobile-workspace-canvas${locked ? ' is-locked' : ''}`}
+      className={`mobile-workspace-canvas workspace-canvas-viewport${locked ? ' is-locked' : ''}${isWorkspaceInkMode ? ' is-inking' : ''}`}
       onPointerDown={(event) => {
-        if (locked || event.target !== event.currentTarget) return
+        if (locked || isWorkspaceInkMode || event.target !== event.currentTarget) return
         setDragging({ kind: 'pan', startX: event.clientX, startY: event.clientY, panX: viewport.panX, panY: viewport.panY })
         setToolbarNodeId(null)
       }}
@@ -565,8 +628,8 @@ export function MobileWorkspaceCanvas({
         const next = screenToWorld(event.clientX, event.clientY)
         const start = screenToWorld(dragging.startX, dragging.startY)
         updateNode(dragging.nodeId, {
-          x: Math.max(12, dragging.nodeX + next.x - start.x),
-          y: Math.max(12, dragging.nodeY + next.y - start.y)
+          x: Math.max(MIN_NODE_POSITION, dragging.nodeX + next.x - start.x),
+          y: Math.max(MIN_NODE_POSITION, dragging.nodeY + next.y - start.y)
         })
       }}
       onPointerUp={() => setDragging(null)}
@@ -590,9 +653,21 @@ export function MobileWorkspaceCanvas({
           <span className="workspace-tool-icon" aria-hidden="true">+</span>
         </button>
       </div>
-      {activeNode && toolbarNodeId === activeNode.id ? (
+      {activeNode && toolbarNodeId === activeNode.id && visualNodeKind(activeNode) === 'textbox' ? (
+        <SharedTextboxToolbar
+          visible
+          kind="workspace"
+          left={sharedToolbarLeft}
+          top={sharedToolbarTop}
+          style={activeNode.textStyle}
+          onStyleChange={(patch) => updateWorkspaceTextboxStyle(activeNode.id, patch)}
+          onDelete={() => removeNode(activeNode.id)}
+          onUndo={() => document.execCommand('undo')}
+          onRedo={() => document.execCommand('redo')}
+        />
+      ) : activeNode && toolbarNodeId === activeNode.id ? (
         <div
-          className="mobile-node-toolbar mobile-workspace-text-toolbar workspace-text-toolbar"
+          className="mobile-node-toolbar note-toolbar workspace-textbox-toolbar is-visible mobile-workspace-text-toolbar workspace-text-toolbar"
           style={{ top: Math.max(12, activeNode.y * viewport.workspaceZoom + viewport.panY - 68), left: Math.max(12, activeNode.x * viewport.workspaceZoom + viewport.panX), position: 'absolute', zIndex: 100 }}
           onPointerDown={(event) => event.stopPropagation()}
           onPointerUp={(event) => event.stopPropagation()}
@@ -685,11 +760,27 @@ export function MobileWorkspaceCanvas({
         </div>
       ) : null}
       <div
-        className="mobile-canvas-grid"
+        className="mobile-canvas-grid workspace-canvas-surface"
+        style={{
+          width: WORKSPACE_CANVAS_SURFACE_WIDTH,
+          height: WORKSPACE_CANVAS_SURFACE_HEIGHT,
+          transform: `translate(${viewport.panX}px, ${viewport.panY}px) scale(${viewport.workspaceZoom})`
+        }}
         onPointerDown={() => {
+          if (isWorkspaceInkMode) return
           onActiveNodeChange(null)
           setToolbarNodeId(null)
         }}
+      />
+      <WorkspaceInkLayer
+        active={isWorkspaceInkMode}
+        toolMode={toolMode}
+        settings={toolSettings}
+        viewport={viewport}
+        highlights={workspaceHighlights}
+        inkStrokes={workspaceInkStrokes}
+        onCommit={commitWorkspaceDraft}
+        onErase={(point) => onWorkspaceEraseInk?.(point, (toolSettings?.eraser.size ?? 24) / Math.max(viewport.workspaceZoom, MIN_WORKSPACE_ZOOM))}
       />
       <svg
         className="mobile-anchor-link-layer workspace-link-layer"
@@ -862,7 +953,20 @@ export function MobileWorkspaceCanvas({
                   value={node.text ?? ''}
                   aria-label={node.title ?? 'Workspace note'}
                   style={styleToCss(node.textStyle)}
-                  onPointerDown={(event) => event.stopPropagation()}
+                  onPointerDown={(event) => {
+                    event.stopPropagation()
+                    onActiveNodeChange(node.id)
+                    setToolbarNodeId(node.id)
+                  }}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    onActiveNodeChange(node.id)
+                    setToolbarNodeId(node.id)
+                  }}
+                  onFocus={() => {
+                    onActiveNodeChange(node.id)
+                    setToolbarNodeId(node.id)
+                  }}
                   onChange={(event) => updateNode(node.id, { text: event.target.value })}
                 />
               )}
@@ -918,12 +1022,225 @@ export function MobileWorkspaceCanvas({
   )
 }
 
+function WorkspaceInkLayer({
+  active,
+  toolMode,
+  settings,
+  viewport,
+  highlights,
+  inkStrokes,
+  onCommit,
+  onErase
+}: {
+  active: boolean
+  toolMode: ToolMode
+  settings?: MobileToolSettings
+  viewport: MobileWorkspaceViewport & { workspaceZoom: number }
+  highlights: FreeformHighlight[]
+  inkStrokes: InkStroke[]
+  onCommit: (kind: 'pen' | 'pencil' | 'freeform-highlight', points: NormalizedPoint[]) => void
+  onErase: (point: NormalizedPoint) => void
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const liveDraftRef = useRef<{ kind: 'pen' | 'pencil' | 'freeform-highlight'; points: NormalizedPoint[] } | null>(null)
+
+  useLayoutEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+
+    const draw = () => {
+      resizeWorkspaceInkCanvas(canvas)
+      const context = canvas.getContext('2d')
+      if (!context) return
+      const rect = canvas.getBoundingClientRect()
+      context.clearRect(0, 0, Math.max(1, rect.width), Math.max(1, rect.height))
+
+      highlights.forEach((highlight) => {
+        drawWorkspaceInkPath(context, highlight.points, viewport, {
+          color: highlight.color,
+          size: highlight.size ?? 18,
+          opacity: highlight.opacity ?? 0.42,
+          kind: 'highlighter'
+        })
+      })
+      inkStrokes.forEach((stroke) => {
+        drawWorkspaceInkPath(context, stroke.points, viewport, {
+          color: stroke.color,
+          size: stroke.size ?? 4,
+          opacity: stroke.tool === 'pencil' ? stroke.opacity ?? 0.58 : 0.92,
+          kind: stroke.tool === 'pencil' ? 'pencil' : 'pen'
+        })
+      })
+    }
+
+    draw()
+    const observer = new ResizeObserver(draw)
+    observer.observe(canvas)
+    return () => observer.disconnect()
+  }, [highlights, inkStrokes, viewport])
+
+  function workspacePointFromPointer(event: ReactPointerEvent<HTMLCanvasElement>): NormalizedPoint {
+    const rect = event.currentTarget.getBoundingClientRect()
+    return {
+      x: (event.clientX - rect.left - viewport.panX) / viewport.workspaceZoom,
+      y: (event.clientY - rect.top - viewport.panY) / viewport.workspaceZoom
+    }
+  }
+
+  function handlePointerDown(event: ReactPointerEvent<HTMLCanvasElement>) {
+    if (!active || !settings) return
+    event.preventDefault()
+    event.stopPropagation()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    const point = workspacePointFromPointer(event)
+
+    if (toolMode === 'eraser') {
+      onErase(point)
+      return
+    }
+    if (toolMode === 'pen' || toolMode === 'pencil' || toolMode === 'freeform-highlight') {
+      liveDraftRef.current = { kind: toolMode, points: [point] }
+    }
+  }
+
+  function handlePointerMove(event: ReactPointerEvent<HTMLCanvasElement>) {
+    if (!active || !settings || event.buttons !== 1) return
+    event.preventDefault()
+    event.stopPropagation()
+    const point = workspacePointFromPointer(event)
+
+    if (toolMode === 'eraser') {
+      onErase(point)
+      return
+    }
+    if (toolMode !== 'pen' && toolMode !== 'pencil' && toolMode !== 'freeform-highlight') return
+
+    const previous = liveDraftRef.current?.points.at(-1)
+    if (previous) {
+      drawLiveWorkspaceInkSegment(event.currentTarget, liveDraftRef.current?.kind ?? toolMode, [previous, point], viewport, settings)
+    }
+    if (liveDraftRef.current) {
+      liveDraftRef.current = { ...liveDraftRef.current, points: [...liveDraftRef.current.points, point] }
+    }
+  }
+
+  function handlePointerUp(event: ReactPointerEvent<HTMLCanvasElement>) {
+    if (!active) return
+    event.preventDefault()
+    event.stopPropagation()
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+    const draft = liveDraftRef.current
+    liveDraftRef.current = null
+    if (draft) onCommit(draft.kind, draft.points)
+  }
+
+  return (
+    <canvas
+      ref={canvasRef}
+      className="mobile-workspace-ink-canvas"
+      aria-hidden="true"
+      data-workspace-ink-canvas="true"
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerUp}
+    />
+  )
+}
+
+function resizeWorkspaceInkCanvas(canvas: HTMLCanvasElement) {
+  const rect = canvas.getBoundingClientRect()
+  const width = Math.max(1, rect.width)
+  const height = Math.max(1, rect.height)
+  const dpr = window.devicePixelRatio || 1
+  const nextWidth = Math.round(width * dpr)
+  const nextHeight = Math.round(height * dpr)
+  if (canvas.width !== nextWidth || canvas.height !== nextHeight) {
+    canvas.width = nextWidth
+    canvas.height = nextHeight
+    canvas.style.width = `${width}px`
+    canvas.style.height = `${height}px`
+  }
+  const context = canvas.getContext('2d')
+  context?.setTransform(dpr, 0, 0, dpr, 0, 0)
+}
+
+function drawLiveWorkspaceInkSegment(
+  canvas: HTMLCanvasElement,
+  kind: 'pen' | 'pencil' | 'freeform-highlight',
+  points: NormalizedPoint[],
+  viewport: MobileWorkspaceViewport & { workspaceZoom: number },
+  settings: MobileToolSettings
+) {
+  resizeWorkspaceInkCanvas(canvas)
+  const context = canvas.getContext('2d')
+  if (!context) return
+  if (kind === 'freeform-highlight') {
+    drawWorkspaceInkPath(context, points, viewport, {
+      color: settings.highlight.color,
+      size: settings.highlight.size,
+      opacity: Math.min(0.75, (settings.highlight.opacity ?? 0.42) + 0.16),
+      kind: 'highlighter'
+    })
+    return
+  }
+  if (kind === 'pencil') {
+    drawWorkspaceInkPath(context, points, viewport, {
+      color: settings.pencil.color,
+      size: settings.pencil.size,
+      opacity: settings.pencil.opacity,
+      kind: 'pencil'
+    })
+    return
+  }
+  drawWorkspaceInkPath(context, points, viewport, {
+    color: settings.pen.color,
+    size: settings.pen.size,
+    opacity: 0.92,
+    kind: 'pen'
+  })
+}
+
+function drawWorkspaceInkPath(
+  context: CanvasRenderingContext2D,
+  points: NormalizedPoint[],
+  viewport: MobileWorkspaceViewport & { workspaceZoom: number },
+  options: { color: string; size: number; opacity: number; kind: 'pen' | 'pencil' | 'highlighter' }
+) {
+  if (points.length < 2) return
+
+  context.save()
+  context.globalCompositeOperation = options.kind === 'highlighter' ? 'multiply' : 'source-over'
+  context.globalAlpha = options.opacity
+  context.strokeStyle = options.color
+  context.lineWidth = Math.max(1.5, options.size * viewport.workspaceZoom)
+  context.lineCap = 'round'
+  context.lineJoin = 'round'
+
+  context.beginPath()
+  context.moveTo(points[0].x * viewport.workspaceZoom + viewport.panX, points[0].y * viewport.workspaceZoom + viewport.panY)
+  for (let index = 1; index < points.length - 1; index += 1) {
+    const next = points[index + 1]
+    const midpointX = ((points[index].x + next.x) / 2) * viewport.workspaceZoom + viewport.panX
+    const midpointY = ((points[index].y + next.y) / 2) * viewport.workspaceZoom + viewport.panY
+    context.quadraticCurveTo(points[index].x * viewport.workspaceZoom + viewport.panX, points[index].y * viewport.workspaceZoom + viewport.panY, midpointX, midpointY)
+  }
+  const last = points[points.length - 1]
+  context.lineTo(last.x * viewport.workspaceZoom + viewport.panX, last.y * viewport.workspaceZoom + viewport.panY)
+  context.stroke()
+  context.restore()
+}
+
 function styleToCss(style?: TextStyle): React.CSSProperties {
   return {
     fontFamily: style?.fontFamily,
     fontSize: style?.fontSize,
     fontWeight: style?.fontWeight,
     fontStyle: style?.fontStyle,
-    textDecoration: [style?.underline ? 'underline' : '', style?.strikethrough ? 'line-through' : ''].filter(Boolean).join(' ') || undefined
+    textDecoration: [style?.underline ? 'underline' : '', style?.strikethrough ? 'line-through' : ''].filter(Boolean).join(' ') || undefined,
+    color: style?.color,
+    backgroundColor: style?.backgroundColor
   }
 }

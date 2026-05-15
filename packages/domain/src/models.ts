@@ -64,6 +64,8 @@ export interface TextStyle {
   fontStyle?: 'normal' | 'italic'
   underline?: boolean
   strikethrough?: boolean
+  color?: string
+  backgroundColor?: string
   preset?: 'body' | 'heading-1' | 'heading-2' | 'quote'
 }
 

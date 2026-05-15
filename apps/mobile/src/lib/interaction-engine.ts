@@ -32,8 +32,11 @@ export type InteractionAction =
   | { type: 'UPDATE_SOURCE_TEXTBOX'; payload: SourceTextbox }
   | { type: 'DELETE_SOURCE_TEXTBOX'; textboxId: string }
   | { type: 'ADD_INK_STROKE'; payload: InkStroke }
+  | { type: 'CLEAR_PAGE_INK'; payload: { documentId: string; pageNumber: number } }
   | { type: 'COMMIT_SOURCE_SNAPSHOT'; before: MobileWorkspaceState; after: MobileWorkspaceState }
   | { type: 'ERASE_AT_POINT'; payload: { documentId: string; pageNumber?: number; point: NormalizedPoint; size?: number; anchorId?: string | null } }
+  | { type: 'ERASE_WORKSPACE_INK_AT_POINT'; payload: { documentId: string; point: NormalizedPoint; size?: number } }
+  | { type: 'ERASE_SURFACE_INK_AT_POINT'; payload: { documentId: string; surface: 'source-pane' | 'workspace'; point: NormalizedPoint; size?: number } }
   | { type: 'UNDO' }
   | { type: 'REDO' }
 
@@ -115,6 +118,29 @@ export function dispatchInteractionAction(state: MobileWorkspaceState, action: I
     return pushPatch(applyPatch(state, patch.redo), patch)
   }
 
+  if (action.type === 'CLEAR_PAGE_INK') {
+    const matchingHighlights = (state.freeformHighlights ?? []).filter((entry) =>
+      isSourceEntryMatch(entry, action.payload.documentId, action.payload.pageNumber)
+    )
+    const matchingInk = (state.inkStrokes ?? []).filter((entry) =>
+      isSourceEntryMatch(entry, action.payload.documentId, action.payload.pageNumber)
+    )
+    if (matchingHighlights.length === 0 && matchingInk.length === 0) return state
+
+    const patch: WorkspacePatch = {
+      redo: [
+        ...matchingHighlights.map((entry) => ({ collection: 'freeformHighlights', op: 'remove', id: entry.id }) as WorkspacePatchOperation),
+        ...matchingInk.map((entry) => ({ collection: 'inkStrokes', op: 'remove', id: entry.id }) as WorkspacePatchOperation)
+      ],
+      undo: [
+        ...matchingHighlights.map((entry) => ({ collection: 'freeformHighlights', op: 'add', value: entry }) as WorkspacePatchOperation),
+        ...matchingInk.map((entry) => ({ collection: 'inkStrokes', op: 'add', value: entry }) as WorkspacePatchOperation)
+      ]
+    }
+
+    return pushPatch(applyPatch(state, patch.redo), patch)
+  }
+
   if (action.type === 'COMMIT_SOURCE_SNAPSHOT') {
     const patch = buildWorkspacePatch(action.before, action.after)
     if (patch.redo.length === 0) return state
@@ -163,6 +189,54 @@ export function dispatchInteractionAction(state: MobileWorkspaceState, action: I
                 undo: [{ collection: 'sourceTextboxes', op: 'add', value: erased.value as SourceTextbox }]
               } satisfies WorkspacePatch
     if (patch.redo.length === 0) return state
+
+    return pushPatch(applyPatch(state, patch.redo), patch)
+  }
+
+  if (action.type === 'ERASE_WORKSPACE_INK_AT_POINT') {
+    const erased = hitTestWorkspaceInk(
+      action.payload.point,
+      {
+        freeformHighlights: state.freeformHighlights?.filter((entry) => isWorkspaceInkEntry(entry, action.payload.documentId)) ?? [],
+        inkStrokes: state.inkStrokes?.filter((entry) => isWorkspaceInkEntry(entry, action.payload.documentId)) ?? []
+      },
+      action.payload.size
+    )
+    if (!erased) return state
+
+    const patch = erased.kind === 'freeformHighlights'
+      ? {
+          redo: [{ collection: 'freeformHighlights', op: 'remove', id: erased.id }],
+          undo: [{ collection: 'freeformHighlights', op: 'add', value: erased.value as FreeformHighlight }]
+        } satisfies WorkspacePatch
+      : {
+          redo: [{ collection: 'inkStrokes', op: 'remove', id: erased.id }],
+          undo: [{ collection: 'inkStrokes', op: 'add', value: erased.value as InkStroke }]
+        } satisfies WorkspacePatch
+
+    return pushPatch(applyPatch(state, patch.redo), patch)
+  }
+
+  if (action.type === 'ERASE_SURFACE_INK_AT_POINT') {
+    const erased = hitTestSurfaceInk(
+      action.payload.point,
+      {
+        freeformHighlights: state.freeformHighlights?.filter((entry) => isInkSurfaceEntry(entry, action.payload.documentId, action.payload.surface)) ?? [],
+        inkStrokes: state.inkStrokes?.filter((entry) => isInkSurfaceEntry(entry, action.payload.documentId, action.payload.surface)) ?? []
+      },
+      action.payload.size
+    )
+    if (!erased) return state
+
+    const patch = erased.kind === 'freeformHighlights'
+      ? {
+          redo: [{ collection: 'freeformHighlights', op: 'remove', id: erased.id }],
+          undo: [{ collection: 'freeformHighlights', op: 'add', value: erased.value as FreeformHighlight }]
+        } satisfies WorkspacePatch
+      : {
+          redo: [{ collection: 'inkStrokes', op: 'remove', id: erased.id }],
+          undo: [{ collection: 'inkStrokes', op: 'add', value: erased.value as InkStroke }]
+        } satisfies WorkspacePatch
 
     return pushPatch(applyPatch(state, patch.redo), patch)
   }
@@ -370,11 +444,62 @@ function buildEraseAnchorPatch(state: MobileWorkspaceState, anchor: PageAnchor):
 }
 
 function isSourceEntryMatch(
-  entry: { documentId: string; pageNumber?: number },
+  entry: { documentId: string; pageNumber?: number; surface?: 'source' | 'source-pane' | 'workspace' },
   documentId: string,
   pageNumber?: number
 ) {
-  return entry.documentId === documentId && (pageNumber == null || (entry.pageNumber ?? 1) === pageNumber)
+  return entry.surface !== 'workspace' && entry.surface !== 'source-pane' && entry.documentId === documentId && (pageNumber == null || (entry.pageNumber ?? 1) === pageNumber)
+}
+
+function isWorkspaceInkEntry(
+  entry: { documentId: string; surface?: 'source' | 'source-pane' | 'workspace' },
+  documentId: string
+) {
+  return entry.surface === 'workspace' && entry.documentId === documentId
+}
+
+function isInkSurfaceEntry(
+  entry: { documentId: string; surface?: 'source' | 'source-pane' | 'workspace' },
+  documentId: string,
+  surface: 'source-pane' | 'workspace'
+) {
+  return entry.surface === surface && entry.documentId === documentId
+}
+
+function hitTestWorkspaceInk(
+  point: NormalizedPoint,
+  elements: {
+    freeformHighlights: FreeformHighlight[]
+    inkStrokes: InkStroke[]
+  },
+  eraserSize = 24
+) {
+  const radius = Math.max(8, eraserSize)
+  const ink = [...elements.inkStrokes].reverse().find((entry) => pathNearPoint(entry.points, point, radius))
+  if (ink) return { kind: 'inkStrokes' as const, id: ink.id, value: ink }
+
+  const highlight = [...elements.freeformHighlights].reverse().find((entry) => pathNearPoint(entry.points, point, radius))
+  if (highlight) return { kind: 'freeformHighlights' as const, id: highlight.id, value: highlight }
+
+  return null
+}
+
+function hitTestSurfaceInk(
+  point: NormalizedPoint,
+  elements: {
+    freeformHighlights: FreeformHighlight[]
+    inkStrokes: InkStroke[]
+  },
+  eraserSize = 24
+) {
+  const radius = Math.max(0.012, eraserSize / 1400)
+  const ink = [...elements.inkStrokes].reverse().find((entry) => pathNearPoint(entry.points, point, radius))
+  if (ink) return { kind: 'inkStrokes' as const, id: ink.id, value: ink }
+
+  const highlight = [...elements.freeformHighlights].reverse().find((entry) => pathNearPoint(entry.points, point, radius))
+  if (highlight) return { kind: 'freeformHighlights' as const, id: highlight.id, value: highlight }
+
+  return null
 }
 
 function anchorContainsPoint(anchor: PageAnchor, point: NormalizedPoint) {
