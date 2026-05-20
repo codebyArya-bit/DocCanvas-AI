@@ -9003,3 +9003,16 @@ body:has(.mobile-modal-backdrop:has(.lt-tag-manager-content)) .mobile-modal-back
 body:has(.mobile-modal-backdrop) .mobile-viewer-commandbar {
   pointer-events: none !important;
 }
+/* Viewer overlay stacking fixes: keep left popup panels above the common nav/command bar. */
+body:has(.mobile-left-popup-backdrop) .mobile-viewer-commandbar {
+  z-index: 80 !important;
+  pointer-events: none !important;
+}
+
+body:has(.mobile-left-popup-backdrop) .mobile-left-popup-backdrop {
+  z-index: 9990 !important;
+}
+
+body:has(.mobile-left-popup-backdrop) .mobile-left-popup {
+  z-index: 9991 !important;
+}
