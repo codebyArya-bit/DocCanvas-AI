@@ -161,7 +161,7 @@ export function dispatchInteractionAction(state: MobileWorkspaceState, action: I
       {
       freeformHighlights: state.freeformHighlights?.filter((entry) => isSourceEntryMatch(entry, action.payload.documentId, action.payload.pageNumber)) ?? [],
       inkStrokes: state.inkStrokes?.filter((entry) => isSourceEntryMatch(entry, action.payload.documentId, action.payload.pageNumber)) ?? [],
-      sourceTextboxes: state.sourceTextboxes?.filter((entry) => isSourceEntryMatch(entry, action.payload.documentId, action.payload.pageNumber)) ?? [],
+      sourceTextboxes: [],
       anchors: sourceAnchors,
       bookmarks: state.bookmarks.filter((entry) => isSourceEntryMatch(entry, action.payload.documentId, action.payload.pageNumber))
       },
