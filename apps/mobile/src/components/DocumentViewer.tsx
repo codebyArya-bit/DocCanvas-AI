@@ -4407,7 +4407,8 @@ function PageEditPanel({
               </button>
             ))}
 
-            <button className="page-editor-select-all" type="button" onClick={toggleSelectAllPages}>`r`n              {allPagesSelected ? 'Clear All' : 'Select All'}
+            <button className="page-editor-select-all" type="button" onClick={toggleSelectAllPages}>
+              {allPagesSelected ? 'Clear All' : 'Select All'}
             </button>
           </div>
         </div>
@@ -4449,7 +4450,9 @@ function PageEditPanel({
               <button type="button" onClick={() => runForSelectedPages((pageNumber) => onRotateCurrent(180, pageNumber))}>Rotate 180° Clockwise</button>
               <button type="button" onClick={() => onRotateAll(90)}>Apply to All Pages (90° CW)</button>
             </div>
-            <p className="mobile-settings-hint">{selectedPageNumbers.length > 1 ? ${selectedPageNumbers.length} selected pages : Selected page : °}</p>
+            <p className="mobile-settings-hint">
+              {selectedPageNumbers.length > 1 ? `${selectedPageNumbers.length} selected pages` : `Selected page ${selectedPage}: ${selectedRotation}°`}
+            </p>
           </section>
         ) : null}
       </div>
@@ -5548,5 +5551,7 @@ function findSourceAnchorIdFromPointer(clientX: number, clientY: number) {
 function findAnnotatedPageFromPointer(event: React.PointerEvent<HTMLElement>) {
   return findAnnotatedPage(event.target) ?? findAnnotatedPage(document.elementFromPoint(event.clientX, event.clientY))
 }
+
+
 
 
