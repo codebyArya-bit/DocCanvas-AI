@@ -139,6 +139,15 @@ state = dispatchInteractionAction(workspace(), {
 })
 assert.equal(state.inkStrokes?.[0].surface, 'workspace')
 state = dispatchInteractionAction(workspace({
+  inkStrokes: [
+    { ...stroke, id: 'source-pixel-segment-erase', points: [{ x: 0.1, y: 0.1 }, { x: 0.9, y: 0.1 }] }
+  ]
+}), {
+  type: 'ERASE_AT_POINT',
+  payload: { documentId: 'doc-1', pageNumber: 1, point: { x: 0.5, y: 0.112 }, size: 12, canvasSize: { width: 1000, height: 1000 } }
+})
+assert.equal(state.inkStrokes?.length, 0)
+state = dispatchInteractionAction(workspace({
   freeformHighlights: [{ ...highlight, id: 'workspace-highlight-erase', pageNumber: undefined, surface: 'workspace', points: [{ x: 200, y: 200 }, { x: 250, y: 250 }] }],
   inkStrokes: [
     { ...stroke, id: 'source-ink-safe', pageNumber: 1, surface: 'source', points: [{ x: 0.2, y: 0.2 }, { x: 0.25, y: 0.25 }] },
@@ -152,6 +161,26 @@ assert.deepEqual(state.inkStrokes?.map((entry) => entry.id), ['source-ink-safe']
 assert.equal(state.freeformHighlights?.length, 1)
 state = dispatchInteractionAction(state, { type: 'UNDO' })
 assert.equal(state.inkStrokes?.length, 2)
+
+state = dispatchInteractionAction(workspace({
+  inkStrokes: [
+    { ...stroke, id: 'workspace-ink-segment-erase', pageNumber: undefined, surface: 'workspace', points: [{ x: 0, y: 0 }, { x: 100, y: 0 }] }
+  ]
+}), {
+  type: 'ERASE_WORKSPACE_INK_AT_POINT',
+  payload: { documentId: 'doc-1', point: { x: 50, y: 8 }, size: 20 }
+})
+assert.equal(state.inkStrokes?.length, 0)
+
+state = dispatchInteractionAction(workspace({
+  inkStrokes: [
+    { ...stroke, id: 'workspace-zoom-radius-erase', pageNumber: undefined, surface: 'workspace', points: [{ x: 0, y: 0 }, { x: 100, y: 0 }] }
+  ]
+}), {
+  type: 'ERASE_SURFACE_INK_AT_POINT',
+  payload: { documentId: 'doc-1', surface: 'workspace', point: { x: 50, y: 3 }, size: 4 }
+})
+assert.equal(state.inkStrokes?.length, 0)
 
 state = dispatchInteractionAction(workspace({
   freeformHighlights: [{ ...highlight, id: 'source-pane-highlight-erase', pageNumber: undefined, surface: 'source-pane', points: [{ x: 0.2, y: 0.2 }, { x: 0.25, y: 0.25 }] }],

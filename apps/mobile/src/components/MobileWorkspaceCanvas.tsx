@@ -28,9 +28,12 @@ interface MobileWorkspaceCanvasProps {
   toolSettings?: MobileToolSettings
   inkStrokes?: InkStroke[]
   freeformHighlights?: FreeformHighlight[]
+  workspaceBoards?: Array<{ id: string; name: string; documentId?: string }>
+  activeWorkspaceBoardId?: string | null
   onWorkspaceInkStroke?: (stroke: InkStroke) => void
   onWorkspaceFreeformHighlight?: (highlight: FreeformHighlight) => void
   onWorkspaceEraseInk?: (point: NormalizedPoint, size: number) => void
+  onOpenWorkspaceSwitcher?: () => void
   onNodesChange: (nodes: CanvasNode[]) => void
   onWorkspaceGraphChange?: (nodes: CanvasNode[], canvasEdges: CanvasEdge[]) => void
   onLinksChange: (links: MobileWorkspaceLink[]) => void
@@ -66,7 +69,7 @@ type NodeResizeDirection =
   | 'bottom-left'
   | 'bottom-right'
 
-const INFINITE_CANVAS_PADDING = 2400
+const INFINITE_CANVAS_PADDING = 12000
 const MIN_NODE_POSITION = -INFINITE_CANVAS_PADDING
 
 type AnchorLinkLine = {
@@ -101,8 +104,8 @@ const PRESET_OPTIONS: Array<{ label: string; value: NonNullable<TextStyle['prese
 ]
 const MIN_WORKSPACE_ZOOM = 0.3
 const MAX_WORKSPACE_ZOOM = 3
-const WORKSPACE_CANVAS_SURFACE_WIDTH = 2200
-const WORKSPACE_CANVAS_SURFACE_HEIGHT = 1800
+const WORKSPACE_CANVAS_SURFACE_WIDTH = 12000
+const WORKSPACE_CANVAS_SURFACE_HEIGHT = 9000
 const WORKSPACE_INK_TOOL_MODES = new Set<ToolMode>(['pen', 'pencil', 'freeform-highlight', 'eraser'])
 
 export function parseWorkspaceToolbarTags(value: string) {
@@ -137,6 +140,7 @@ export function buildLinkedCommentNodeAndEdge(sourceNode: CanvasNode, nodes: Can
     kind: 'comment',
     excerptId: sourceNode.excerptId,
     documentId: sourceNode.documentId,
+    workspaceBoardId: sourceNode.workspaceBoardId ?? 'default-board',
     sourceAnchorId: sourceNode.sourceAnchorId,
     selectionColor: sourceNode.selectionColor,
     nodeColor: undefined,
@@ -189,9 +193,11 @@ export function MobileWorkspaceCanvas({
   toolSettings,
   inkStrokes = [],
   freeformHighlights = [],
+  activeWorkspaceBoardId,
   onWorkspaceInkStroke,
   onWorkspaceFreeformHighlight,
   onWorkspaceEraseInk,
+  onOpenWorkspaceSwitcher,
   onNodesChange,
   onWorkspaceGraphChange,
   onLinksChange,
@@ -208,7 +214,17 @@ export function MobileWorkspaceCanvas({
   const [toolbarToolsOpen, setToolbarToolsOpen] = useState(false)
   const [tagsDraft, setTagsDraft] = useState('')
   const surfaceRef = useRef<HTMLDivElement | null>(null)
-  const documentNodes = useMemo(() => nodes.filter((node) => node.documentId === documentId && node.visible !== false), [documentId, nodes])
+  const activeBoardId = activeWorkspaceBoardId ?? 'default-board'
+  const documentNodes = useMemo(
+    () =>
+      nodes.filter(
+        (node) =>
+          node.documentId === documentId &&
+          node.visible !== false &&
+          ((node.workspaceBoardId ?? 'default-board') === activeBoardId)
+      ),
+    [activeBoardId, documentId, nodes]
+  )
   const activeNode = documentNodes.find((node) => node.id === activeNodeId) ?? null
   const resizeDirections: NodeResizeDirection[] = ['top', 'bottom', 'left', 'right', 'top-left', 'top-right', 'bottom-left', 'bottom-right']
   const activeTextStyle = activeNode?.textStyle ?? {}
@@ -609,8 +625,20 @@ export function MobileWorkspaceCanvas({
     <section
       ref={surfaceRef}
       className={`mobile-workspace-canvas workspace-canvas-viewport${locked ? ' is-locked' : ''}${isWorkspaceInkMode ? ' is-inking' : ''}`}
+      style={{ minHeight: 420 }}
       onPointerDown={(event) => {
-        if (locked || isWorkspaceInkMode || event.target !== event.currentTarget) return
+        if (locked || isWorkspaceInkMode) return
+        const target = event.target instanceof HTMLElement ? event.target : null
+        if (
+          target?.closest('.mobile-canvas-node') ||
+          target?.closest('.workspace-tool-rail') ||
+          target?.closest('.mobile-canvas-zoom-level') ||
+          target?.closest('.mobile-node-toolbar') ||
+          target?.closest('.workspace-switcher-panel')
+        ) {
+          return
+        }
+        event.currentTarget.setPointerCapture(event.pointerId)
         setDragging({ kind: 'pan', startX: event.clientX, startY: event.clientY, panX: viewport.panX, panY: viewport.panY })
         setToolbarNodeId(null)
       }}
@@ -645,14 +673,29 @@ export function MobileWorkspaceCanvas({
         <span>{Math.round(viewport.workspaceZoom * 100)}%</span>
         <button type="button" onClick={() => setViewportZoom(viewport.workspaceZoom + 0.1)}>+</button>
       </div>
-      <div className="workspace-tool-rail" aria-label="Workspace tools">
-        <button type="button" className="workspace-tool-btn" aria-label="Draw Textbox in Workspace" onClick={() => onCreateNode('text')}>
+      <aside className="workspace-tool-rail" aria-label="Workspace tools">
+        <button
+          type="button"
+          className="workspace-tool-btn"
+          aria-label="Add Workspace Textbox"
+          onClick={() => onCreateNode('text')}
+        >
           <span className="workspace-tool-icon" aria-hidden="true">AB+</span>
         </button>
-        <button type="button" className="workspace-tool-btn" aria-label="Add Workspace Card" onClick={() => onCreateNode('comment')}>
+        <button
+          type="button"
+          className="workspace-tool-btn"
+          aria-label="Open Workspaces"
+          title="Open Workspaces"
+          onClick={(event) => {
+            event.preventDefault()
+            event.stopPropagation()
+            onOpenWorkspaceSwitcher?.()
+          }}
+        >
           <span className="workspace-tool-icon" aria-hidden="true">+</span>
         </button>
-      </div>
+      </aside>
       {activeNode && toolbarNodeId === activeNode.id && visualNodeKind(activeNode) === 'textbox' ? (
         <SharedTextboxToolbar
           visible
@@ -854,7 +897,7 @@ export function MobileWorkspaceCanvas({
             return (
             <article
               key={node.id}
-              className={`mobile-canvas-node workspace-node workspace-${visualKind}-node${activeNodeId === node.id ? ' is-active' : ''}`}
+              className={`mobile-canvas-node workspace-node workspace-${visualKind}-node${visualKind === 'textbox' || visualKind === 'comment' ? ' shared-textbox-card' : ''}${activeNodeId === node.id ? ' is-active' : ''}`}
               data-node-id={node.id}
               style={{
                 left: node.x,
@@ -887,7 +930,7 @@ export function MobileWorkspaceCanvas({
                 />
               ) : null}
               <div
-                className={`mobile-node-handle workspace-${visualKind}-handle`}
+                className={`mobile-node-handle workspace-${visualKind}-handle${visualKind === 'textbox' || visualKind === 'comment' ? ' workspace-textbox-handle shared-textbox-handle' : ''}`}
                 onPointerDown={(event) => {
                   event.preventDefault()
                   event.stopPropagation()
@@ -900,7 +943,24 @@ export function MobileWorkspaceCanvas({
                 }}
               >
                 <span style={{ color: accentColor }}>{node.title ?? 'Workspace note'}</span>
-                <span style={{ fontSize: 10, opacity: 0.5 }}>drag</span>
+                {visualKind === 'textbox' || visualKind === 'comment' ? (
+                  <button
+                    type="button"
+                    onPointerDown={(event) => {
+                      event.preventDefault()
+                      event.stopPropagation()
+                    }}
+                    onClick={(event) => {
+                      event.preventDefault()
+                      event.stopPropagation()
+                      removeNode(node.id)
+                    }}
+                  >
+                    Delete
+                  </button>
+                ) : (
+                  <span style={{ fontSize: 10, opacity: 0.5 }}>drag</span>
+                )}
               </div>
               <button
                 type="button"
@@ -926,7 +986,7 @@ export function MobileWorkspaceCanvas({
                 </div>
               ) : visualKind === 'comment' ? (
                 <div
-                  className="workspace-comment-input"
+                  className="workspace-comment-input shared-textbox-editor"
                   contentEditable
                   suppressContentEditableWarning
                   data-node-editor="true"
@@ -948,7 +1008,7 @@ export function MobileWorkspaceCanvas({
                 </div>
               ) : (
                 <textarea
-                  className="workspace-node-copy"
+                  className="workspace-node-copy shared-textbox-editor"
                   data-node-editor="true"
                   value={node.text ?? ''}
                   aria-label={node.title ?? 'Workspace note'}
@@ -1043,6 +1103,7 @@ function WorkspaceInkLayer({
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const liveDraftRef = useRef<{ kind: 'pen' | 'pencil' | 'freeform-highlight'; points: NormalizedPoint[] } | null>(null)
+  const pointerDownRef = useRef(false)
 
   useLayoutEffect(() => {
     const canvas = canvasRef.current
@@ -1092,6 +1153,7 @@ function WorkspaceInkLayer({
     event.preventDefault()
     event.stopPropagation()
     event.currentTarget.setPointerCapture(event.pointerId)
+    pointerDownRef.current = true
     const point = workspacePointFromPointer(event)
 
     if (toolMode === 'eraser') {
@@ -1104,7 +1166,7 @@ function WorkspaceInkLayer({
   }
 
   function handlePointerMove(event: ReactPointerEvent<HTMLCanvasElement>) {
-    if (!active || !settings || event.buttons !== 1) return
+    if (!active || !settings || !pointerDownRef.current) return
     event.preventDefault()
     event.stopPropagation()
     const point = workspacePointFromPointer(event)
@@ -1128,6 +1190,7 @@ function WorkspaceInkLayer({
     if (!active) return
     event.preventDefault()
     event.stopPropagation()
+    pointerDownRef.current = false
     if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId)
     }

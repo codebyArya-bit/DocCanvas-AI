@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject, type WheelEvent as ReactWheelEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist'
 import type { CanvasNode, PageAnchor, TextStyle } from '@workspace/domain'
 import bookmarkIcon from './bookmark.png'
@@ -36,7 +37,7 @@ import {
   type TagDefinition,
   type ToolMode
 } from '../lib/mobile-store'
-import { destroyPdfTask, openPdfDocument, type PdfLoadingTaskLike } from '../lib/pdf-loader'
+import { destroyPdfTask, isExpectedPdfCancellation, openPdfDocument, type PdfLoadingTaskLike } from '../lib/pdf-loader'
 import { convertClientRectsToPageAnchorGeometry } from '../lib/excerpts/pdf-selection'
 import { resolveSelectionPopupPosition, type SelectionPopupPlacement, type SelectionViewportRect } from '../lib/selection-popup-position'
 import {
@@ -73,10 +74,22 @@ import {
 
 type LoadState = 'idle' | 'loading' | 'loaded' | 'error'
 type PaneMode = 'source' | 'workspace'
-type PanelMode = 'source-tools' | 'navigate' | 'share' | 'more' | 'highlight-view' | 'page-edit' | 'documents' | 'bookmarks' | null
+type PanelMode = 'navigate' | 'share' | 'more' | 'highlight-view' | 'page-edit' | 'documents' | 'bookmarks' | null
 type LeftPopupMode = 'highlight-view' | 'documents' | 'bookmarks' | 'share' | 'more' | null
 
 type SelectionRect = SelectionViewportRect
+
+function ModalPortal({ children }: { children: ReactNode }) {
+  const [mounted, setMounted] = useState(false)
+
+  useEffect(() => {
+    setMounted(true)
+    return () => setMounted(false)
+  }, [])
+
+  if (!mounted) return null
+  return createPortal(children, document.body)
+}
 
 type SelectionPopupState = {
   selection: SelectionArtifactInput
@@ -120,8 +133,8 @@ type DraftPath = {
 }
 
 type GlobalInkSurface =
-  | { kind: 'source'; pageNumber: number; element: HTMLElement; point: NormalizedPoint }
-  | { kind: 'source-pane'; point: NormalizedPoint }
+  | { kind: 'source'; pageNumber: number; element: HTMLElement; point: NormalizedPoint; canvasSize: { width: number; height: number } }
+  | { kind: 'source-pane'; point: NormalizedPoint; canvasSize: { width: number; height: number } }
   | { kind: 'workspace'; point: NormalizedPoint }
 
 type GlobalInkDraft = {
@@ -185,12 +198,14 @@ export function DocumentViewer({ docId }: { docId: string }) {
 
   const [documentPopupAnchor, setDocumentPopupAnchor] = useState<HTMLElement | null>(null)
   const [documentPopupTab, setDocumentPopupTab] = useState<'documents' | 'outline'>('documents')
+  const [workspaceSwitcherOpen, setWorkspaceSwitcherOpen] = useState(false)
+  const [newWorkspaceName, setNewWorkspaceName] = useState('')
 
   const sourceKind = record ? getDocumentSourceKind(record) : 'pdf'
   const viewerState = workspace && record ? getDocumentViewerState(workspace, record.document.id) : { viewerZoom: 1, sourceZoom: 1, workspaceZoom: 1, scrollPosition: 0, activePage: 1 }
   const toolMode = workspace?.toolMode ?? 'select'
   const toolSettings = workspace?.toolSettings
-  const semanticSearchIndex = useMemo(() => buildSemanticSearchIndex(record), [record])
+  const semanticSearchIndex = useMemo(() => buildSemanticSearchIndex(record, workspace), [record, workspace])
   const sourceSelectionHighlights = useMemo(() => {
     if (!workspace || !record) return []
     const excerptAnchorIds = new Set(workspace.nodes.filter((node) => node.documentId === record.document.id && (node.kind === 'excerpt' || node.kind === 'comment')).map((node) => node.sourceAnchorId))
@@ -351,10 +366,11 @@ export function DocumentViewer({ docId }: { docId: string }) {
           }
         }
 
-        const normalizedWorkspace = {
+        const baseWorkspace = {
           ...loadedWorkspace,
           activeDocumentId: loadedRecord.document.id
         }
+        const normalizedWorkspace = ensureWorkspaceBoards(baseWorkspace, loadedRecord.document.id)
         setWorkspace(normalizedWorkspace)
         setDocuments(loadedDocuments)
         setRecord(loadedRecord)
@@ -489,6 +505,7 @@ export function DocumentViewer({ docId }: { docId: string }) {
     const selection: SelectionArtifactInput = {
       workspaceId: workspace.workspaceId,
       documentId: record.document.id,
+      workspaceBoardId: workspace.activeWorkspaceBoardId ?? 'default-board',
       pageNumber: sourceSelection.pageNumber,
       text: sourceSelection.text,
       startSpanIndex: sourceSelection.anchor.startSpanIndex,
@@ -542,10 +559,10 @@ export function DocumentViewer({ docId }: { docId: string }) {
 
   function createExcerptFromSelection(popup: SelectionPopupState) {
     if (!record || !workspace) return
-    const selection = { ...popup.selection, selectionColor: popup.color ?? '#5d5df6', tags: popup.tags }
+    const selection = { ...popup.selection, workspaceBoardId: workspace.activeWorkspaceBoardId ?? 'default-board', selectionColor: popup.color ?? '#5d5df6', tags: popup.tags }
 
     const viewportRatio = popup.top / Math.max(1, window.innerHeight)
-    commitSourceWorkspace((current) => applyExcerptSelection(current, selection, viewportRatio))
+    commitSourceWorkspace((current) => applyExcerptSelection(current, { ...selection, workspaceBoardId: workspace.activeWorkspaceBoardId ?? 'default-board' }, viewportRatio))
     setSelectionPopup(null)
     try { document.getSelection()?.removeAllRanges() } catch {}
   }
@@ -559,10 +576,10 @@ export function DocumentViewer({ docId }: { docId: string }) {
 
   function createCommentFromSelection(popup: SelectionPopupState) {
     if (!record || !workspace) return
-    const selection = { ...popup.selection, selectionColor: popup.color ?? '#5d5df6', tags: popup.tags }
+    const selection = { ...popup.selection, workspaceBoardId: workspace.activeWorkspaceBoardId ?? 'default-board', selectionColor: popup.color ?? '#5d5df6', tags: popup.tags }
     const viewportRatio = popup.top / Math.max(1, window.innerHeight)
 
-    commitSourceWorkspace((current) => applyCommentSelection(current, selection, viewportRatio))
+    commitSourceWorkspace((current) => applyCommentSelection(current, { ...selection, workspaceBoardId: workspace.activeWorkspaceBoardId ?? 'default-board' }, viewportRatio))
     setSelectionPopup(null)
     try { document.getSelection()?.removeAllRanges() } catch {}
   }
@@ -624,7 +641,13 @@ export function DocumentViewer({ docId }: { docId: string }) {
   }
 
   function tagPdfSelection(selection: SelectionArtifactInput, tags: string[]) {
-    commitSourceWorkspace((current) => applyTagSelection(current, selection, tags))
+    const existingAnchor = findExistingAnchorForSelection(selection)
+    const selectionWithoutForcedHighlight = {
+      ...selection,
+      selectionColor: existingAnchor?.selectionColor ?? '',
+      tags
+    }
+    commitSourceWorkspace((current) => applyTagSelection(current, selectionWithoutForcedHighlight, tags))
   }
 
   function recolorSelection(popup: SelectionPopupState, color: string) {
@@ -690,12 +713,88 @@ export function DocumentViewer({ docId }: { docId: string }) {
 
   function createFreeNode(kind: 'text' | 'comment') {
     if (!record || !workspace) return
-    const node = buildFreeNode({ kind, workspace, documentId: record.document.id })
+    const activeBoardId = workspace.activeWorkspaceBoardId ?? 'default-board'
+    const node = {
+      ...buildFreeNode({ kind, workspace, documentId: record.document.id }),
+      workspaceBoardId: activeBoardId
+    }
     updateWorkspace((current) => ({
       ...current,
       nodes: [...current.nodes, node],
       activeNodeId: node.id,
       updatedAt: node.updatedAt
+    }))
+  }
+
+  function ensureWorkspaceBoards(current: MobileWorkspaceState, documentId: string) {
+    const now = new Date().toISOString()
+    const existing = current.workspaceBoards ?? []
+    if (existing.length > 0) return current
+
+    const defaultBoard = {
+      id: 'default-board',
+      documentId,
+      name: 'Workspace 1',
+      createdAt: now,
+      updatedAt: now
+    }
+
+    return {
+      ...current,
+      workspaceBoards: [defaultBoard],
+      activeWorkspaceBoardId: defaultBoard.id,
+      updatedAt: now
+    }
+  }
+
+  function createWorkspaceBoard() {
+    if (!record) return
+    const name = newWorkspaceName.trim()
+    if (!name) return
+
+    const now = new Date().toISOString()
+    const board = {
+      id: `workspace-board-${crypto.randomUUID()}`,
+      documentId: record.document.id,
+      name,
+      createdAt: now,
+      updatedAt: now
+    }
+
+    updateWorkspace((current) => {
+      const normalized = ensureWorkspaceBoards(current, record.document.id)
+      return {
+        ...normalized,
+        workspaceBoards: [...(normalized.workspaceBoards ?? []), board],
+        activeWorkspaceBoardId: board.id,
+        activeNodeId: null,
+        updatedAt: now
+      }
+    })
+    setNewWorkspaceName('')
+  }
+
+  function switchWorkspaceBoard(boardId: string) {
+    updateWorkspace((current) => ({
+      ...current,
+      activeWorkspaceBoardId: boardId,
+      activeNodeId: null,
+      activeAnchorId: null,
+      updatedAt: new Date().toISOString()
+    }))
+  }
+
+  function clearWorkspaceInk() {
+    if (!record) return
+    updateWorkspace((current) => ({
+      ...current,
+      freeformHighlights: (current.freeformHighlights ?? []).filter(
+        (entry) => !(entry.documentId === record.document.id && entry.surface === 'workspace')
+      ),
+      inkStrokes: (current.inkStrokes ?? []).filter(
+        (entry) => !(entry.documentId === record.document.id && entry.surface === 'workspace')
+      ),
+      updatedAt: new Date().toISOString()
     }))
   }
 
@@ -787,51 +886,98 @@ export function DocumentViewer({ docId }: { docId: string }) {
     activeToolPageRef.current = null
   }
 
-  function eraseInkAtPoint(pageNumber: number, point: NormalizedPoint, clientX: number, clientY: number) {
+  function eraseInkAtPoint(pageNumber: number, point: NormalizedPoint, clientX: number, clientY: number, canvasSize?: { width: number; height: number }) {
     if (!record || !toolSettings) return
     const anchorId = findSourceAnchorIdFromPointer(clientX, clientY)
     updateWorkspace((current) =>
       dispatchInteractionAction(current, {
         type: 'ERASE_AT_POINT',
-        payload: { documentId: record.document.id, pageNumber, point, size: toolSettings.eraser.size, anchorId }
+        payload: { documentId: record.document.id, pageNumber, point, size: toolSettings.eraser.size, anchorId, canvasSize }
       })
     )
   }
 
-  function routeGlobalInkPoint(clientX: number, clientY: number): GlobalInkSurface | null {
+  function routeGlobalInkPoint(
+    clientX: number,
+    clientY: number,
+    activeSurface?: 'workspace' | 'source'
+  ): GlobalInkSurface | null {
     if (!record || !workspace) return null
+
+    if (activeSurface === 'workspace') {
+      return routeWorkspaceInkPoint(clientX, clientY)
+    }
+
+    if (activeSurface === 'source') {
+      return routeSourceInkPoint(clientX, clientY)
+    }
+
+    return routeSourceInkPoint(clientX, clientY) ?? routeWorkspaceInkPoint(clientX, clientY)
+  }
+
+  function routeWorkspaceInkPoint(clientX: number, clientY: number): GlobalInkSurface | null {
+    if (!workspace) return null
+
+    const workspaceCanvas = document.querySelector<HTMLElement>('.mobile-workspace-canvas')
+    const workspaceRect = workspaceCanvas?.getBoundingClientRect()
+    if (!workspaceRect) return null
+
+    if (
+      clientX < workspaceRect.left ||
+      clientX > workspaceRect.right ||
+      clientY < workspaceRect.top ||
+      clientY > workspaceRect.bottom
+    ) {
+      return null
+    }
+
+    const appZoom = 1
+    return {
+      kind: 'workspace',
+      point: {
+        x: ((clientX - workspaceRect.left) / appZoom - (workspace.workspaceViewport.panX ?? 0)) / viewerState.workspaceZoom,
+        y: ((clientY - workspaceRect.top) / appZoom - (workspace.workspaceViewport.panY ?? 0)) / viewerState.workspaceZoom
+      }
+    }
+  }
+
+  function routeSourceInkPoint(clientX: number, clientY: number): GlobalInkSurface | null {
     const elements = document.elementsFromPoint(clientX, clientY)
-    const pageElement = elements.find((element) => element instanceof HTMLElement && element.classList.contains('mobile-annotated-page')) as HTMLElement | undefined
+
+    const pageElement = elements.find(
+      (element) =>
+        element instanceof HTMLElement &&
+        element.classList.contains('mobile-annotated-page')
+    ) as HTMLElement | undefined
+
     if (pageElement) {
+      const sourceBounds = getSourcePageInkBounds(pageElement)
       return {
         kind: 'source',
         pageNumber: Number(pageElement.dataset.pageNumber ?? 1),
         element: pageElement,
-        point: normalizePointInSourceInkBounds(clientX, clientY, pageElement)
+        point: normalizePointInSourceInkBounds(clientX, clientY, pageElement),
+        canvasSize: { width: sourceBounds.width, height: sourceBounds.height }
       }
     }
 
     const sourcePane = sourcePaneRef.current
     const sourceRect = sourcePane?.getBoundingClientRect()
-    if (sourceRect && clientX >= sourceRect.left && clientX <= sourceRect.right && clientY >= sourceRect.top && clientY <= sourceRect.bottom) {
+
+    if (
+      sourceRect &&
+      clientX >= sourceRect.left &&
+      clientX <= sourceRect.right &&
+      clientY >= sourceRect.top &&
+      clientY <= sourceRect.bottom
+    ) {
       return {
         kind: 'source-pane',
         point: {
           x: Math.max(0, Math.min(1, (clientX - sourceRect.left) / Math.max(1, sourceRect.width))),
           y: Math.max(0, Math.min(1, (clientY - sourceRect.top) / Math.max(1, sourceRect.height)))
-        }
-      }
-    }
-
-    const workspaceCanvas = document.querySelector<HTMLElement>('.mobile-workspace-canvas')
-    const workspaceRect = workspaceCanvas?.getBoundingClientRect()
-    if (workspaceRect && clientX >= workspaceRect.left && clientX <= workspaceRect.right && clientY >= workspaceRect.top && clientY <= workspaceRect.bottom) {
-      return {
-        kind: 'workspace',
-        point: {
-          x: (clientX - workspaceRect.left - (workspace.workspaceViewport.panX ?? 0)) / viewerState.workspaceZoom,
-          y: (clientY - workspaceRect.top - (workspace.workspaceViewport.panY ?? 0)) / viewerState.workspaceZoom
-        }
+        },
+        canvasSize: { width: sourceRect.width, height: sourceRect.height }
       }
     }
 
@@ -841,9 +987,10 @@ export function DocumentViewer({ docId }: { docId: string }) {
   function eraseGlobalInkAt(route: GlobalInkSurface, clientX: number, clientY: number) {
     if (!record || !toolSettings) return
     if (route.kind === 'source') {
-      eraseInkAtPoint(route.pageNumber, route.point, clientX, clientY)
+      eraseInkAtPoint(route.pageNumber, route.point, clientX, clientY, route.canvasSize)
       return
     }
+    const appZoom = Math.max(viewerState.viewerZoom || 1, 0.1)
     updateWorkspace((current) =>
       dispatchInteractionAction(current, {
         type: 'ERASE_SURFACE_INK_AT_POINT',
@@ -851,7 +998,8 @@ export function DocumentViewer({ docId }: { docId: string }) {
           documentId: record.document.id,
           surface: route.kind,
           point: route.point,
-          size: route.kind === 'workspace' ? toolSettings.eraser.size / Math.max(viewerState.workspaceZoom, 0.3) : toolSettings.eraser.size
+          size: route.kind === 'workspace' ? toolSettings.eraser.size / (appZoom * Math.max(viewerState.workspaceZoom, 0.3)) : toolSettings.eraser.size,
+          canvasSize: route.kind === 'source-pane' ? route.canvasSize : undefined
         }
       })
     )
@@ -1135,11 +1283,22 @@ export function DocumentViewer({ docId }: { docId: string }) {
     })
   }
 
-  function changeSplit(clientX: number) {
+  function changeSplit(clientX: number, clientY?: number) {
     const body = document.querySelector<HTMLElement>('.mobile-viewer-body')
     if (!body || !workspace) return
     const rect = body.getBoundingClientRect()
-    pendingSplitRef.current = clampSplitRatio((clientX - rect.left) / Math.max(1, rect.width))
+    const arrangement = workspace.workspaceArrangement ?? 'automatic'
+    const resolvedArrangement =
+      arrangement === 'automatic'
+        ? viewportSize.width < 900 || viewportSize.height < 620
+          ? 'vertical'
+          : 'horizontal'
+        : arrangement
+    const rawRatio =
+      resolvedArrangement === 'vertical'
+        ? ((clientY ?? rect.top + rect.height * 0.54) - rect.top) / Math.max(1, rect.height)
+        : (clientX - rect.left) / Math.max(1, rect.width)
+    pendingSplitRef.current = clampSplitRatio(rawRatio)
     if (splitFrameRef.current != null) return
     splitFrameRef.current = requestAnimationFrame(() => {
       splitFrameRef.current = null
@@ -1177,7 +1336,28 @@ export function DocumentViewer({ docId }: { docId: string }) {
   }
 
   const splitRatio = workspace?.viewerLayout.splitRatio ?? 0.54
-  const gridTemplateColumns = viewerGridTemplateColumns(splitRatio, layoutMode)
+  const leftHandLayout = workspace?.viewerLayout.leftHandLayout ?? false
+  const effectiveSplitRatio = leftHandLayout ? 1 - splitRatio : splitRatio
+  const workspaceArrangement = workspace?.workspaceArrangement ?? 'automatic'
+  const resolvedWorkspaceArrangement =
+    workspaceArrangement === 'automatic'
+      ? viewportSize.width < 900 || viewportSize.height < 620
+        ? 'vertical'
+        : 'horizontal'
+      : workspaceArrangement
+  const gridTemplateColumns = viewerGridTemplateColumns(effectiveSplitRatio, layoutMode)
+  const viewerBodyClassName = [
+    'mobile-viewer-body',
+    leftHandLayout ? 'is-left-hand-layout' : '',
+    resolvedWorkspaceArrangement === 'vertical' ? 'is-workspace-below' : 'is-workspace-beside'
+  ].filter(Boolean).join(' ')
+  const viewerBodyStyle =
+    resolvedWorkspaceArrangement === 'vertical' && layoutMode !== 'mobile'
+      ? {
+          gridTemplateColumns: layoutMode === 'compact' ? '96px minmax(0, 1fr)' : '112px minmax(0, 1fr)',
+          gridTemplateRows: 'minmax(280px, 0.95fr) 10px minmax(280px, 1fr)'
+        }
+      : { gridTemplateColumns }
   const linkLayoutKey = [
     layoutMode,
     paneMode,
@@ -1189,6 +1369,57 @@ export function DocumentViewer({ docId }: { docId: string }) {
     workspace?.activeAnchorId ?? '',
     workspace?.activeNodeId ?? ''
   ].join(':')
+  const commandInkSettings = toolSettings && INK_TOOL_MODES.has(toolMode)
+    ? toolMode === 'pen'
+      ? toolSettings.pen
+      : toolMode === 'pencil'
+        ? toolSettings.pencil
+        : toolMode === 'freeform-highlight'
+          ? toolSettings.highlight
+          : toolSettings.eraser
+    : null
+  const commandInkColor = toolSettings
+    ? toolMode === 'pen'
+      ? toolSettings.pen.color
+      : toolMode === 'pencil'
+        ? toolSettings.pencil.color
+        : toolMode === 'freeform-highlight'
+          ? toolSettings.highlight.color
+          : ''
+    : ''
+  const commandInkSize = commandInkSettings?.size ?? 4
+  const commandInkSizeMax = toolMode === 'freeform-highlight' ? 42 : toolMode === 'eraser' ? 72 : 24
+  const commandInkSizeMin = toolMode === 'eraser' ? 12 : 1
+
+  function updateCommandInkColor(color: string) {
+    if (!toolSettings || toolMode === 'eraser') return
+    if (toolMode === 'freeform-highlight') {
+      updateToolSettings({ ...toolSettings, highlight: { ...toolSettings.highlight, color } })
+      return
+    }
+    if (toolMode === 'pencil') {
+      updateToolSettings({ ...toolSettings, pencil: { ...toolSettings.pencil, color } })
+      return
+    }
+    updateToolSettings({ ...toolSettings, pen: { ...toolSettings.pen, color } })
+  }
+
+  function updateCommandInkSize(size: number) {
+    if (!toolSettings || !commandInkSettings) return
+    if (toolMode === 'freeform-highlight') {
+      updateToolSettings({ ...toolSettings, highlight: { ...toolSettings.highlight, size } })
+      return
+    }
+    if (toolMode === 'eraser') {
+      updateToolSettings({ ...toolSettings, eraser: { ...toolSettings.eraser, size } })
+      return
+    }
+    if (toolMode === 'pencil') {
+      updateToolSettings({ ...toolSettings, pencil: { ...toolSettings.pencil, size } })
+      return
+    }
+    updateToolSettings({ ...toolSettings, pen: { ...toolSettings.pen, size } })
+  }
 
   if (loadState === 'loading' || loadState === 'idle') {
     return (
@@ -1212,14 +1443,16 @@ export function DocumentViewer({ docId }: { docId: string }) {
   }
 
   return (
-    <div className="mobile-viewer-zoom-frame" style={{ overflow: viewerState.viewerZoom > 1 ? 'auto' : 'hidden' }}>
+    <div className="mobile-viewer-zoom-frame" style={{ overflowX: 'hidden', overflowY: 'auto' }}>
     <main
       className={`mobile-viewer mobile-viewer-${layoutMode}`}
       data-layout-mode={layoutMode}
       style={{
         width: `calc(100dvw / ${viewerState.viewerZoom})`,
         height: `calc(100dvh / ${viewerState.viewerZoom})`,
-        transform: `scale(${viewerState.viewerZoom})`
+        maxWidth: '100%',
+        transform: `scale(${viewerState.viewerZoom})`,
+        transformOrigin: 'top left'
       }}
     >
       <ViewerHeader title={record.document.title} subtitle={sourceKindLabel(sourceKind)} status={status} />
@@ -1247,9 +1480,53 @@ export function DocumentViewer({ docId }: { docId: string }) {
           </button>
         </div>
         <div className="mobile-viewer-command-group mobile-viewer-command-center">
-          <button className={panelMode === 'source-tools' ? 'mobile-tool-button is-active' : 'mobile-tool-button'} type="button" onClick={() => setPanelMode(panelMode === 'source-tools' ? null : 'source-tools')}>
-            <Icon name={toolIcon(toolMode)} /> Tools
-          </button>
+          <div className="mobile-command-tool-selector" role="group" aria-label="Drawing tools">
+            {SOURCE_TOOLS.filter((tool) => tool.mode !== 'textbox').map((tool) => (
+              <button
+                key={tool.mode}
+                className={toolMode === tool.mode ? 'mobile-command-tool is-active' : 'mobile-command-tool'}
+                type="button"
+                aria-label={tool.label}
+                title={tool.label}
+                onClick={() => {
+                  setToolMode(tool.mode)
+                  if (tool.mode === 'select') setPanelMode(null)
+                }}
+              >
+                <Icon name={tool.icon} />
+              </button>
+            ))}
+          </div>
+          {commandInkSettings ? (
+            <div className="mobile-command-ink-settings" aria-label="Ink settings">
+              {toolMode !== 'eraser' ? (
+                <div className="mobile-command-ink-colors" aria-label="Ink colors">
+                  {INK_COLORS.map((color) => (
+                    <button
+                      key={color}
+                      className={commandInkColor.toLowerCase() === color.toLowerCase() ? 'is-active' : ''}
+                      type="button"
+                      aria-label={`Color ${color}`}
+                      title={color}
+                      onClick={() => updateCommandInkColor(color)}
+                      style={{ backgroundColor: color }}
+                    />
+                  ))}
+                </div>
+              ) : null}
+              <label className="mobile-command-ink-size">
+                <span>{commandInkSize}px</span>
+                <input
+                  type="range"
+                  min={commandInkSizeMin}
+                  max={commandInkSizeMax}
+                  value={commandInkSize}
+                  aria-label="Ink size"
+                  onChange={(event) => updateCommandInkSize(Number(event.target.value))}
+                />
+              </label>
+            </div>
+          ) : null}
           <button className="mobile-tool-button" type="button" aria-label="Zoom out whole page" title="Zoom out whole page" onClick={() => setViewerZoom(viewerState.viewerZoom - ZOOM_STEP)}>-</button>
           <button className="mobile-tool-button mobile-zoom-readout" type="button" aria-label="Reset whole page zoom" title="Reset whole page zoom" onClick={() => setViewerZoom(1)}>{Math.round(viewerState.viewerZoom * 100)}%</button>
           <button className="mobile-tool-button" type="button" aria-label="Zoom in whole page" title="Zoom in whole page" onClick={() => setViewerZoom(viewerState.viewerZoom + ZOOM_STEP)}>+</button>
@@ -1273,7 +1550,11 @@ export function DocumentViewer({ docId }: { docId: string }) {
         <button className={leftPopup === 'bookmarks' ? 'is-active' : ''} type="button" onClick={() => openLeftPopup('bookmarks')}>Bookmarks</button>
       </div>
 
-      <section ref={viewerBodyRef} className="mobile-viewer-body" style={{ gridTemplateColumns }}>
+      <section
+        ref={viewerBodyRef}
+        className={viewerBodyClassName}
+        style={viewerBodyStyle}
+      >
         {layoutMode !== 'mobile' ? (
           <SourceSidePanel
             activePanel={leftPopup}
@@ -1301,43 +1582,45 @@ export function DocumentViewer({ docId }: { docId: string }) {
           />
         ) : null}
         {documentPopupAnchor && record && workspace && (
-          <DocumentOutlinePopup
-            anchor={documentPopupAnchor}
-            initialTab={documentPopupTab}
-            records={documents}
-            activeDocumentId={record.document.id}
-            workspace={workspace}
-            sourceBookmarks={(workspace.sourceBookmarks ?? []).filter(
-              (b) => b.documentId === record.document.id
-            )}
-            currentDocumentTitle={record.document.title}
-            onClose={() => setDocumentPopupAnchor(null)}
-            onOpenDocument={(documentId) => {
-              setDocumentPopupAnchor(null)
-              router.push(`/viewer/${documentId}`)
-            }}
-            onFocusAnchor={(anchorId) => {
-              focusAnchor(anchorId)
-              setDocumentPopupAnchor(null)
-            }}
-            onScrollPage={(pageNumber) => {
-              scrollToPage(pageNumber)
-              setDocumentPopupAnchor(null)
-            }}
-            onAddDocument={() => {
-              setDocumentPopupAnchor(null)
-              router.push('/')
-            }}
-            onAddBookmark={() => {
-              const selection = window.getSelection()
-              if (selection && !selection.isCollapsed && selection.toString().trim()) {
-                captureSourceSelection()
-              } else {
-                window.alert('Select text in the source document to bookmark.')
-              }
-              setDocumentPopupAnchor(null)
-            }}
-          />
+          <ModalPortal>
+            <DocumentOutlinePopup
+              anchor={documentPopupAnchor}
+              initialTab={documentPopupTab}
+              records={documents}
+              activeDocumentId={record.document.id}
+              workspace={workspace}
+              sourceBookmarks={(workspace.sourceBookmarks ?? []).filter(
+                (b) => b.documentId === record.document.id
+              )}
+              currentDocumentTitle={record.document.title}
+              onClose={() => setDocumentPopupAnchor(null)}
+              onOpenDocument={(documentId) => {
+                setDocumentPopupAnchor(null)
+                router.push(`/viewer/${documentId}`)
+              }}
+              onFocusAnchor={(anchorId) => {
+                focusAnchor(anchorId)
+                setDocumentPopupAnchor(null)
+              }}
+              onScrollPage={(pageNumber) => {
+                scrollToPage(pageNumber)
+                setDocumentPopupAnchor(null)
+              }}
+              onAddDocument={() => {
+                setDocumentPopupAnchor(null)
+                router.push('/')
+              }}
+              onAddBookmark={() => {
+                const selection = window.getSelection()
+                if (selection && !selection.isCollapsed && selection.toString().trim()) {
+                  captureSourceSelection()
+                } else {
+                  window.alert('Select text in the source document to bookmark.')
+                }
+                setDocumentPopupAnchor(null)
+              }}
+            />
+          </ModalPortal>
         )}
         <section
           ref={sourcePaneRef}
@@ -1351,19 +1634,7 @@ export function DocumentViewer({ docId }: { docId: string }) {
             <span>{Math.round(viewerState.sourceZoom * 100)}%</span>
             <button className="mobile-tool-button" type="button" onClick={() => setSourceZoom(viewerState.sourceZoom + ZOOM_STEP)}>+</button>
           </div>
-          {toolSettings && INK_TOOL_MODES.has(toolMode) ? (
-            <SourceInkToolbar
-              toolMode={toolMode}
-              settings={toolSettings}
-              pageNumber={viewerState.activePage}
-              canUndo={(workspace.historyPast ?? []).length > 0}
-              onToolMode={setToolMode}
-              onSettingsChange={updateToolSettings}
-              onUndo={() => updateWorkspace((current) => dispatchInteractionAction(current, { type: 'UNDO' }))}
-              onClearPage={clearCurrentPageInk}
-              onClose={() => setToolMode('select')}
-            />
-          ) : null}
+
           <div
             className={`mobile-source-interaction-surface tool-${toolMode}`}
             onPointerDown={handlePointerDown}
@@ -1406,6 +1677,7 @@ export function DocumentViewer({ docId }: { docId: string }) {
                 rootRef={sourcePaneRef}
                 workspaceId={workspace.workspaceId}
                 documentId={record.document.id}
+                availableTags={workspaceTagOptions(workspace)}
                 bookmarkedAnchorIds={workspace.bookmarks.map((bookmark) => bookmark.sourceAnchorId)}
                 linkedAnchorIds={workspace.nodes.flatMap((node) => (node.sourceAnchorId ? [node.sourceAnchorId] : []))}
                 popupState={pdfSelectionPopup}
@@ -1426,25 +1698,12 @@ export function DocumentViewer({ docId }: { docId: string }) {
               />
             ) : null}
           </div>
-
-          {panelMode === 'source-tools' && toolSettings ? (
-            <ToolPanel
-              toolMode={toolMode}
-              settings={toolSettings}
-              onToolMode={(mode) => {
-                setToolMode(mode)
-                if (mode === 'select') setPanelMode(null)
-              }}
-              onSettingsChange={updateToolSettings}
-              onClose={() => setPanelMode(null)}
-            />
-          ) : null}
         </section>
 
         <div
           className="mobile-pane-divider"
           role="separator"
-          aria-orientation="vertical"
+          aria-orientation={resolvedWorkspaceArrangement === 'vertical' ? 'horizontal' : 'vertical'}
           tabIndex={0}
           onDoubleClick={() =>
             updateWorkspace((current) => ({
@@ -1455,14 +1714,75 @@ export function DocumentViewer({ docId }: { docId: string }) {
           }
           onPointerDown={(event) => {
             event.currentTarget.setPointerCapture(event.pointerId)
-            changeSplit(event.clientX)
+            changeSplit(event.clientX, event.clientY)
           }}
           onPointerMove={(event) => {
-            if (event.currentTarget.hasPointerCapture(event.pointerId)) changeSplit(event.clientX)
+            if (event.currentTarget.hasPointerCapture(event.pointerId)) changeSplit(event.clientX, event.clientY)
           }}
         />
 
         <section className={paneMode === 'workspace' ? 'mobile-workspace-pane is-active' : 'mobile-workspace-pane'} aria-label="Workspace">
+          {workspaceSwitcherOpen ? (
+            <ModalPortal>
+              <>
+              <button
+                className="workspace-switcher-backdrop"
+                type="button"
+                aria-label="Close workspace switcher"
+                onClick={() => setWorkspaceSwitcherOpen(false)}
+              />
+              <aside className="workspace-switcher-panel" aria-label="Workspaces">
+                <header>
+                  <div>
+                    <span>Mobile Workspace</span>
+                    <h2>Workspaces</h2>
+                  </div>
+                  <button type="button" aria-label="Close workspace switcher" onClick={() => setWorkspaceSwitcherOpen(false)}>×</button>
+                </header>
+                <div className="workspace-switcher-list">
+                  {(workspace.workspaceBoards?.length
+                    ? workspace.workspaceBoards
+                    : [
+                        {
+                          id: 'default-board',
+                          documentId: record.document.id,
+                          name: 'Workspace 1',
+                          createdAt: new Date().toISOString(),
+                          updatedAt: new Date().toISOString()
+                        }
+                      ]).map((board) => (
+                    <button
+                      key={board.id}
+                      type="button"
+                      className={board.id === (workspace.activeWorkspaceBoardId ?? 'default-board') ? 'is-active' : ''}
+                      onClick={() => switchWorkspaceBoard(board.id)}
+                    >
+                      <strong>{board.name}</strong>
+                      <small>{board.id === (workspace.activeWorkspaceBoardId ?? 'default-board') ? 'Active' : 'Tap to switch'}</small>
+                    </button>
+                  ))}
+                </div>
+                <form
+                  className="workspace-switcher-create"
+                  onSubmit={(event) => {
+                    event.preventDefault()
+                    createWorkspaceBoard()
+                  }}
+                >
+                  <label>
+                    <span>New workspace name</span>
+                    <input
+                      value={newWorkspaceName}
+                      placeholder={`Workspace ${(workspace.workspaceBoards ?? []).length + 1}`}
+                      onChange={(event) => setNewWorkspaceName(event.target.value)}
+                    />
+                  </label>
+                  <button type="submit">Create Workspace</button>
+                </form>
+              </aside>
+              </>
+            </ModalPortal>
+          ) : null}
           <MobileWorkspaceCanvas
             documentId={record.document.id}
             nodes={workspace.nodes}
@@ -1478,6 +1798,8 @@ export function DocumentViewer({ docId }: { docId: string }) {
             toolSettings={toolSettings}
             inkStrokes={workspace.inkStrokes}
             freeformHighlights={workspace.freeformHighlights}
+            workspaceBoards={workspace.workspaceBoards ?? []}
+            activeWorkspaceBoardId={workspace.activeWorkspaceBoardId}
             onWorkspaceInkStroke={(payload) => updateWorkspace((current) => dispatchInteractionAction(current, { type: 'ADD_INK_STROKE', payload }))}
             onWorkspaceFreeformHighlight={(payload) => updateWorkspace((current) => dispatchInteractionAction(current, { type: 'ADD_FREEFORM_HIGHLIGHT', payload }))}
             onWorkspaceEraseInk={(point, size) =>
@@ -1525,6 +1847,7 @@ export function DocumentViewer({ docId }: { docId: string }) {
             onActiveNodeChange={(activeNodeId) => updateWorkspace((current) => ({ ...current, activeNodeId, updatedAt: new Date().toISOString() }))}
             onOpenAnchor={focusAnchor}
             onCreateNode={createFreeNode}
+            onOpenWorkspaceSwitcher={() => setWorkspaceSwitcherOpen(true)}
           />
         </section>
         {toolSettings && INK_TOOL_MODES.has(toolMode) ? (
@@ -1581,6 +1904,7 @@ export function DocumentViewer({ docId }: { docId: string }) {
         <SelectionActionPopup
           key={`${selectionPopup.selection.text}:${selectionPopup.left}:${selectionPopup.top}`}
           popup={selectionPopup}
+          availableTags={workspaceTagOptions(workspace)}
           bookmarked={workspace.bookmarks.some((bookmark) => bookmark.sourceAnchorId === buildPageAnchor({ ...selectionPopup.selection, selectionColor: selectionPopup.color ?? '#5d5df6', tags: selectionPopup.tags }).id)}
           onExcerpt={() => createExcerptFromSelection(selectionPopup)}
           onComment={() => createCommentFromSelection(selectionPopup)}
@@ -1598,8 +1922,9 @@ export function DocumentViewer({ docId }: { docId: string }) {
       ) : null}
 
       {panelMode === 'page-edit' && pdfState ? (
-        <Modal title="Edit Pages" onClose={() => setPanelMode(null)}>
+        <Modal title="Edit Pages" className="page-editor-modal-shell" onClose={() => setPanelMode(null)}>
           <PageEditPanel
+            pages={pdfState.pages}
             pageCount={pdfState.pages.length}
             currentPage={viewerState.activePage}
             deletedPages={pageEditDeletedPages}
@@ -2355,7 +2680,10 @@ function SelectedTextHighlightLayer({
     <div className="mobile-selected-text-highlight-layer">
       {pageSelectionHighlights.flatMap((anchor) => {
         const hasTags = (anchor.tags ?? []).length > 0
-        const hasTextFill = Boolean(anchor.selectionColor || workspace.activeAnchorId === anchor.id || excerptAnchorIds.has(anchor.id))
+        const isActiveTagMatch = Boolean(workspace.activeTag && (anchor.tags ?? []).includes(workspace.activeTag))
+        const isDefinedTerm = (anchor.tags ?? []).some((tag) => tag.toLowerCase().includes('defined'))
+        const shouldShowDefinedTerm = workspace.showDefinedTermsAttachments !== false && Boolean(workspace.underlineDefinedTerms) && isDefinedTerm
+        const hasTextFill = Boolean(anchor.selectionColor || workspace.activeAnchorId === anchor.id || excerptAnchorIds.has(anchor.id) || isActiveTagMatch || shouldShowDefinedTerm)
         return bookmarkAnchorIds.has(anchor.id) ? [] : anchorToHighlightRects(anchor, sourceZoom).map((rect, index) => (
           <div
             key={`${anchor.id}-${index}`}
@@ -2367,9 +2695,10 @@ function SelectedTextHighlightLayer({
               width: Math.max(8, rect.width),
               height: Math.max(8, rect.height),
               background: hasTextFill
-                ? `${anchor.selectionColor ?? getTagColor(anchor.tags?.[0] ?? 'tag')}44`
+                ? `${anchor.selectionColor ?? getTagColor(anchor.tags?.[0] ?? 'tag')}33`
                 : 'transparent',
-              borderColor: hasTextFill ? (anchor.selectionColor ?? getTagColor(anchor.tags?.[0] ?? 'tag')) : 'transparent'
+              borderColor: hasTextFill ? (anchor.selectionColor ?? getTagColor(anchor.tags?.[0] ?? 'tag')) : 'transparent',
+              textDecoration: shouldShowDefinedTerm ? 'underline' : undefined
             }}
             title={anchor.textQuote}
             aria-hidden={hasTags ? undefined : true}
@@ -2559,13 +2888,15 @@ function GlobalInkCaptureLayer({
   toolMode: ToolMode
   settings: MobileToolSettings
   bodyRef: RefObject<HTMLElement | null>
-  onRoutePoint: (clientX: number, clientY: number) => GlobalInkSurface | null
+  onRoutePoint: (clientX: number, clientY: number, activeSurface?: 'workspace' | 'source') => GlobalInkSurface | null
   onErase: (route: GlobalInkSurface, clientX: number, clientY: number) => void
   onCommit: (draft: GlobalInkDraft) => void
   onWheelScroll: (event: ReactWheelEvent<HTMLCanvasElement>) => void
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const draftRef = useRef<GlobalInkDraft | null>(null)
+  const pointerDownRef = useRef(false)
+  const activeGlobalInkSurfaceRef = useRef<'workspace' | 'source' | null>(null)
 
   useLayoutEffect(() => {
     const canvas = canvasRef.current
@@ -2591,12 +2922,35 @@ function GlobalInkCaptureLayer({
     context.clearRect(0, 0, Math.max(1, rect.width), Math.max(1, rect.height))
   }
 
+  function isInteractiveViewerUiTarget(target: EventTarget | null) {
+    return target instanceof Element && Boolean(
+      target.closest('.mobile-viewer-commandbar') ||
+      target.closest('.mobile-command-tool-selector') ||
+      target.closest('.mobile-command-ink-settings') ||
+      target.closest('.mobile-command-ink-colors') ||
+      target.closest('.source-ink-toolbar') ||
+      target.closest('.floating-universal-toolbar') ||
+      target.closest('.workspace-tool-rail') ||
+      target.closest('.mobile-canvas-zoom-level') ||
+      target.closest('.workspace-switcher-panel') ||
+      target.closest('.mobile-modal') ||
+      target.closest('.mobile-left-popup') ||
+      target.closest('.lt-settings-panel') ||
+      target.closest('.lt-floating-menu')
+    )
+  }
+
   function handlePointerDown(event: ReactPointerEvent<HTMLCanvasElement>) {
+    if (isInteractiveViewerUiTarget(event.target)) {
+      return
+    }
     const route = onRoutePoint(event.clientX, event.clientY)
     if (!route) return
     event.preventDefault()
     event.stopPropagation()
     event.currentTarget.setPointerCapture(event.pointerId)
+    pointerDownRef.current = true
+    activeGlobalInkSurfaceRef.current = route.kind === 'workspace' ? 'workspace' : 'source'
 
     if (toolMode === 'eraser') {
       onErase(route, event.clientX, event.clientY)
@@ -2614,8 +2968,8 @@ function GlobalInkCaptureLayer({
   }
 
   function handlePointerMove(event: ReactPointerEvent<HTMLCanvasElement>) {
-    if (event.buttons !== 1) return
-    const route = onRoutePoint(event.clientX, event.clientY)
+    if (!pointerDownRef.current) return
+    const route = onRoutePoint(event.clientX, event.clientY, activeGlobalInkSurfaceRef.current ?? undefined)
     if (!route) return
     event.preventDefault()
     event.stopPropagation()
@@ -2640,6 +2994,8 @@ function GlobalInkCaptureLayer({
   function handlePointerUp(event: ReactPointerEvent<HTMLCanvasElement>) {
     event.preventDefault()
     event.stopPropagation()
+    pointerDownRef.current = false
+    activeGlobalInkSurfaceRef.current = null
     if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId)
     }
@@ -2753,7 +3109,6 @@ function resizeGlobalInkCanvas(canvas: HTMLCanvasElement) {
 }
 
 function drawLiveGlobalInkSegment(canvas: HTMLCanvasElement, kind: DraftPath['kind'], points: NormalizedPoint[], settings: MobileToolSettings) {
-  resizeGlobalInkCanvas(canvas)
   const context = canvas.getContext('2d')
   if (!context) return
 
@@ -2805,8 +3160,7 @@ function SourceInkToolbar({
   onToolMode,
   onSettingsChange,
   onUndo,
-  onClearPage,
-  onClose
+  onClearPage
 }: {
   toolMode: ToolMode
   settings: MobileToolSettings
@@ -2816,7 +3170,6 @@ function SourceInkToolbar({
   onSettingsChange: (settings: MobileToolSettings) => void
   onUndo: () => void
   onClearPage: () => void
-  onClose: () => void
 }) {
   const toolbarRef = useRef<HTMLDivElement | null>(null)
   const [position, setPosition] = useState({ left: 18, top: 72 })
@@ -2952,6 +3305,7 @@ function SourceInkToolbar({
         <span />
       </button>
       <div className="source-ink-toolbar-tools" role="group" aria-label="Ink mode">
+        <button className={toolMode === 'select' ? 'is-active' : ''} type="button" onClick={() => onToolMode('select')} aria-label="Select" title="Select"><Icon name="select" /></button>
         <button className={toolMode === 'pen' ? 'is-active' : ''} type="button" onClick={() => onToolMode('pen')} aria-label="Pen" title="Pen"><Icon name="pen" /></button>
         <button className={toolMode === 'pencil' ? 'is-active' : ''} type="button" onClick={() => onToolMode('pencil')} aria-label="Pencil" title="Pencil"><Icon name="pencil" /></button>
         <button className={toolMode === 'freeform-highlight' ? 'is-active' : ''} type="button" onClick={() => onToolMode('freeform-highlight')} aria-label="Highlighter" title="Highlighter"><Icon name="highlighter" /></button>
@@ -2978,7 +3332,7 @@ function SourceInkToolbar({
       </label>
       <button className="source-ink-toolbar-action" type="button" onClick={onUndo} disabled={!canUndo} aria-label="Undo ink stroke" title="Undo"><Icon name="undo" /></button>
       <button className="source-ink-toolbar-action" type="button" onClick={onClearPage} aria-label={`Clear ink on page ${pageNumber}`} title={`Clear page ${pageNumber}`}><Icon name="trash" /></button>
-      <button className="source-ink-toolbar-close" type="button" aria-label="Close ink toolbar" title={actionTitle('Close')} onClick={onClose}><Icon name="close" /></button>
+      <button className="source-ink-toolbar-close" type="button" aria-label="Close ink toolbar" title={actionTitle('Close')} onClick={() => onToolMode('select')}><Icon name="close" /></button>
     </div>
   )
 }
@@ -3075,8 +3429,24 @@ function SourceTextboxLayer({
   )
 }
 
-function SourceTextboxView({ textbox, onChange, onDelete }: { textbox: SourceTextbox; onChange: (textbox: SourceTextbox) => void; onDelete: (textboxId: string) => void }) {
+function SourceTextboxView({
+  textbox,
+  onChange,
+  onDelete
+}: {
+  textbox: SourceTextbox
+  onChange: (textbox: SourceTextbox) => void
+  onDelete: (textboxId: string) => void
+}) {
   const [focused, setFocused] = useState(false)
+  const [dragging, setDragging] = useState<{
+    pointerId: number
+    startX: number
+    startY: number
+    xNorm: number
+    yNorm: number
+  } | null>(null)
+
   function stopSourceTextboxEvent(event: React.PointerEvent<HTMLElement>) {
     event.stopPropagation()
   }
@@ -3085,16 +3455,51 @@ function SourceTextboxView({ textbox, onChange, onDelete }: { textbox: SourceTex
     onChange({ ...textbox, textStyle: { ...(textbox.textStyle ?? {}), ...style } })
   }
 
+  function moveTextbox(clientX: number, clientY: number) {
+    if (!dragging) return
+
+    const page = document
+      .querySelector(`[data-page-number="${textbox.pageNumber ?? 1}"]`)
+      ?.querySelector<HTMLElement>('.mobile-source-textbox-layer')
+      ?? document.querySelector<HTMLElement>('.mobile-source-textbox-layer')
+
+    const rect = page?.getBoundingClientRect()
+    if (!rect) return
+
+    const dxNorm = (clientX - dragging.startX) / Math.max(1, rect.width)
+    const dyNorm = (clientY - dragging.startY) / Math.max(1, rect.height)
+    const widthNorm = textbox.widthNorm ?? 0.3
+    const heightNorm = textbox.heightNorm ?? 0.16
+
+    onChange({
+      ...textbox,
+      xNorm: Math.max(0, Math.min(1 - widthNorm, dragging.xNorm + dxNorm)),
+      yNorm: Math.max(0, Math.min(1 - heightNorm, dragging.yNorm + dyNorm))
+    })
+  }
+
   return (
     <div
-      className={`mobile-source-textbox-shell${focused ? ' is-editing' : ''}`}
+      className={`mobile-source-textbox-shell shared-textbox-card${focused ? ' is-editing' : ''}${dragging ? ' is-dragging' : ''}`}
       onPointerDown={stopSourceTextboxEvent}
-      onPointerMove={stopSourceTextboxEvent}
-      onPointerUp={stopSourceTextboxEvent}
+      onPointerMove={(event) => {
+        stopSourceTextboxEvent(event)
+        if (!dragging || dragging.pointerId !== event.pointerId) return
+        event.preventDefault()
+        moveTextbox(event.clientX, event.clientY)
+      }}
+      onPointerUp={(event) => {
+        stopSourceTextboxEvent(event)
+        if (dragging?.pointerId === event.pointerId) {
+          event.currentTarget.releasePointerCapture(event.pointerId)
+          setDragging(null)
+        }
+      }}
+      onPointerCancel={() => setDragging(null)}
       style={{
         left: `${textbox.xNorm * 100}%`,
         top: `${textbox.yNorm * 100}%`,
-        width: `${(textbox.widthNorm ?? 0.28) * 100}%`,
+        width: `${(textbox.widthNorm ?? 0.3) * 100}%`,
         minHeight: `${(textbox.heightNorm ?? 0.16) * 100}%`
       }}
     >
@@ -3109,19 +3514,34 @@ function SourceTextboxView({ textbox, onChange, onDelete }: { textbox: SourceTex
         onUndo={() => document.execCommand('undo')}
         onRedo={() => document.execCommand('redo')}
       />
-      <div className="mobile-source-textbox-handle">
+      <div
+        className="mobile-source-textbox-handle shared-textbox-handle"
+        onPointerDown={(event) => {
+          event.preventDefault()
+          event.stopPropagation()
+          event.currentTarget.parentElement?.setPointerCapture(event.pointerId)
+          setFocused(true)
+          setDragging({
+            pointerId: event.pointerId,
+            startX: event.clientX,
+            startY: event.clientY,
+            xNorm: textbox.xNorm,
+            yNorm: textbox.yNorm
+          })
+        }}
+      >
         <span>Text</span>
         <button type="button" onClick={(event) => { event.stopPropagation(); onDelete(textbox.id) }}>Delete</button>
       </div>
       <textarea
-        className="mobile-source-textbox"
+        className="mobile-source-textbox shared-textbox-editor"
         value={textbox.content}
         placeholder="Type source note..."
         style={styleToCss(textbox.textStyle)}
         onPointerDown={(event) => event.stopPropagation()}
         onClick={(event) => event.stopPropagation()}
         onFocus={() => setFocused(true)}
-        onBlur={() => window.setTimeout(() => setFocused(false), 120)}
+        onBlur={() => window.setTimeout(() => setFocused(false), 160)}
         onChange={(event) => onChange({ ...textbox, content: event.target.value })}
       />
     </div>
@@ -3136,6 +3556,20 @@ function tagBadgeLabel(tag: string) {
 
 function tagDisplayLabel(tag: string) {
   return tag.replace(/^#/, '').trim() || 'Tag'
+}
+
+function globalTagLabel(tag: TagDefinition) {
+  return `${tag.category.trim()}-${tag.name.trim()}`
+    .replace(/\s+/g, '-')
+    .replace(/^-|-$/g, '')
+    .toLowerCase()
+}
+
+function workspaceTagOptions(workspace: MobileWorkspaceState) {
+  return Array.from(new Set([
+    ...TAG_PRESETS,
+    ...(workspace.globalTags ?? []).map(globalTagLabel)
+  ])).filter(Boolean)
 }
 
 function styleToCss(style?: TextStyle): CSSProperties {
@@ -3154,57 +3588,256 @@ function styleToCss(style?: TextStyle): CSSProperties {
   }
 }
 
-function ToolPanel({
+function FloatingUniversalToolBar({
   toolMode,
   settings,
+  pageNumber,
+  canUndo,
   onToolMode,
   onSettingsChange,
+  onUndo,
+  onClearPage,
   onClose
 }: {
   toolMode: ToolMode
   settings: MobileToolSettings
+  pageNumber: number
+  canUndo: boolean
   onToolMode: (mode: ToolMode) => void
   onSettingsChange: (settings: MobileToolSettings) => void
+  onUndo: () => void
+  onClearPage: () => void
   onClose: () => void
 }) {
+  const barRef = useRef<HTMLDivElement>(null)
+  const [expanded, setExpanded] = useState(false)
+  const [position, setPosition] = useState<{ left: number; top: number }>({ left: 0, top: 0 })
+  const dragging = useRef(false)
+  const dragOffset = useRef({ x: 0, y: 0 })
+  const initialized = useRef(false)
+
+  const currentTool = SOURCE_TOOLS.find((t) => t.mode === toolMode)
+  const isInkTool = INK_TOOL_MODES.has(toolMode)
+
+  const activeSettings =
+    toolMode === 'pen' ? settings.pen
+    : toolMode === 'pencil' ? settings.pencil
+    : toolMode === 'freeform-highlight' ? settings.highlight
+    : toolMode === 'eraser' ? settings.eraser
+    : null
+
+  const clampPosition = useCallback((left: number, top: number) => {
+    const w = typeof window === 'undefined' ? 400 : window.innerWidth
+    const h = typeof window === 'undefined' ? 800 : window.innerHeight
+    const bw = barRef.current?.offsetWidth ?? 220
+    const bh = barRef.current?.offsetHeight ?? 48
+    return {
+      left: Math.max(8, Math.min(left, w - bw - 8)),
+      top: Math.max(72, Math.min(top, h - bh - 16))
+    }
+  }, [])
+
+  useLayoutEffect(() => {
+    if (initialized.current) return
+    initialized.current = true
+    const w = typeof window === 'undefined' ? 400 : window.innerWidth
+    const h = typeof window === 'undefined' ? 800 : window.innerHeight
+    const bw = barRef.current?.offsetWidth ?? 220
+    setPosition({
+      left: Math.round((w - bw) / 2),
+      top: Math.round(h * 0.12)
+    })
+  }, [])
+
+  useLayoutEffect(() => {
+    const onResize = () => {
+      setPosition((prev) => clampPosition(prev.left, prev.top))
+    }
+    const observer = new ResizeObserver(onResize)
+    if (barRef.current) observer.observe(barRef.current)
+    window.addEventListener('resize', onResize)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', onResize)
+    }
+  }, [clampPosition])
+
+  const handlePointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const target = event.target as HTMLElement
+    if (target.closest('button, input, label, select')) return
+    dragging.current = true
+    const rect = barRef.current?.getBoundingClientRect()
+    if (rect) {
+      dragOffset.current = { x: event.clientX - rect.left, y: event.clientY - rect.top }
+    }
+    barRef.current?.setPointerCapture(event.pointerId)
+    event.preventDefault()
+  }, [])
+
+  const handlePointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (!dragging.current) return
+    const nextLeft = event.clientX - dragOffset.current.x
+    const nextTop = event.clientY - dragOffset.current.y
+    setPosition(clampPosition(nextLeft, nextTop))
+  }, [clampPosition])
+
+  const handlePointerUp = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    dragging.current = false
+    barRef.current?.releasePointerCapture(event.pointerId)
+  }, [])
+
+  const toggleExpand = useCallback(() => setExpanded((prev) => !prev), [])
+
+  const activeColor =
+    toolMode === 'pen' ? settings.pen.color
+    : toolMode === 'pencil' ? settings.pencil.color
+    : toolMode === 'freeform-highlight' ? settings.highlight.color
+    : '#5d5df6'
+  const activeSize = activeSettings?.size ?? 3
+
   return (
-    <aside className="mobile-tool-panel" aria-label="Source tools">
-      <header>
-        <strong>Source Tools</strong>
-        <button className="mobile-secondary-button" type="button" onClick={onClose}>Close</button>
-      </header>
-      <div className="mobile-tool-selector">
-        {SOURCE_TOOLS.map((tool) => (
-          <button key={tool.mode} className={toolMode === tool.mode ? 'is-active' : ''} type="button" onClick={() => onToolMode(tool.mode)}>
-            <Icon name={tool.icon} /> {tool.label}
+    <aside
+      ref={barRef}
+      className={`floating-universal-toolbar${expanded ? ' is-expanded' : ''}`}
+      style={{ left: position.left, top: position.top }}
+      aria-label="Universal tools"
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+    >
+      <div className="floating-toolbar-header">
+        <span className="floating-toolbar-grip" aria-hidden="true">
+          <svg width="12" height="18" viewBox="0 0 12 18"><circle cx="3" cy="3" r="1.5" fill="currentColor" opacity="0.45"/><circle cx="9" cy="3" r="1.5" fill="currentColor" opacity="0.45"/><circle cx="3" cy="9" r="1.5" fill="currentColor" opacity="0.45"/><circle cx="9" cy="9" r="1.5" fill="currentColor" opacity="0.45"/><circle cx="3" cy="15" r="1.5" fill="currentColor" opacity="0.45"/><circle cx="9" cy="15" r="1.5" fill="currentColor" opacity="0.45"/></svg>
+        </span>
+        <button
+          type="button"
+          className="floating-toolbar-toggle"
+          onClick={toggleExpand}
+        >
+          {expanded ? (
+            <svg width="16" height="16" viewBox="0 0 16 16"><polyline points="4,10 8,6 12,10" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+          ) : (
+            currentTool ? (
+              <span className="floating-toolbar-current-label">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: 5 }}>
+                  {toolMode === 'select' && <><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/><path d="M13 13l6 6"/></>}
+                  {toolMode === 'pen' && <><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></>}
+                  {toolMode === 'pencil' && <><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></>}
+                  {toolMode === 'freeform-highlight' && <><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" opacity="0.55"/><rect x="2" y="16" width="16" height="5" rx="1" fill="currentColor" opacity="0.35"/></>}
+                  {toolMode === 'eraser' && <><path d="M20 20H7L3 16c-.8-.8-.8-2 0-2.8L14 2.2c.8-.8 2-.8 2.8 0L20 5.5"/><path d="M6 17l3 3"/><path d="M18 4l3 3"/><path d="M10 12l4 4"/></>}
+                  {toolMode === 'textbox' && <><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M7 8h10"/><path d="M7 12h10"/><path d="M7 16h6"/></>}
+                </svg>
+                {currentTool.label}
+              </span>
+            ) : (
+              <span className="floating-toolbar-current-label">Tools</span>
+            )
+          )}
+        </button>
+        {expanded && (
+          <button type="button" className="floating-toolbar-close" onClick={onClose} aria-label="Close toolbar">
+            <svg width="16" height="16" viewBox="0 0 16 16"><line x1="4" y1="4" x2="12" y2="12" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/><line x1="12" y1="4" x2="4" y2="12" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
           </button>
-        ))}
+        )}
       </div>
-      <label>Pen color<input type="color" value={settings.pen.color} onChange={(event) => onSettingsChange({ ...settings, pen: { ...settings.pen, color: event.target.value } })} /></label>
-      <label>Pen size<input type="range" min="1" max="18" value={settings.pen.size} onChange={(event) => onSettingsChange({ ...settings, pen: { ...settings.pen, size: Number(event.target.value) } })} /></label>
-      <label>Pencil color<input type="color" value={settings.pencil.color} onChange={(event) => onSettingsChange({ ...settings, pencil: { ...settings.pencil, color: event.target.value } })} /></label>
-      <label>Pencil size<input type="range" min="1" max="14" value={settings.pencil.size} onChange={(event) => onSettingsChange({ ...settings, pencil: { ...settings.pencil, size: Number(event.target.value) } })} /></label>
-      <label>Pencil opacity<input type="range" min="0.2" max="0.9" step="0.01" value={settings.pencil.opacity} onChange={(event) => onSettingsChange({ ...settings, pencil: { ...settings.pencil, opacity: Number(event.target.value) } })} /></label>
-      <label>Highlight color<input type="color" value={settings.highlight.color} onChange={(event) => onSettingsChange({ ...settings, highlight: { ...settings.highlight, color: event.target.value } })} /></label>
-      <label>Highlight size<input type="range" min="8" max="42" value={settings.highlight.size} onChange={(event) => onSettingsChange({ ...settings, highlight: { ...settings.highlight, size: Number(event.target.value) } })} /></label>
-      <label>Opacity<input type="range" min="0.15" max="0.8" step="0.01" value={settings.highlight.opacity} onChange={(event) => onSettingsChange({ ...settings, highlight: { ...settings.highlight, opacity: Number(event.target.value) } })} /></label>
-      <label className="mobile-toggle-row"><input type="checkbox" checked={settings.highlight.smoothed} onChange={(event) => onSettingsChange({ ...settings, highlight: { ...settings.highlight, smoothed: event.target.checked } })} /> Smooth highlight</label>
-      <label>Eraser size<input type="range" min="12" max="72" value={settings.eraser.size} onChange={(event) => onSettingsChange({ ...settings, eraser: { ...settings.eraser, size: Number(event.target.value) } })} /></label>
+
+      {expanded && (
+        <div className="floating-toolbar-body">
+          <div className="floating-toolbar-mode-row">
+            {SOURCE_TOOLS.map((tool) => (
+              <button
+                key={tool.mode}
+                type="button"
+                className={toolMode === tool.mode ? 'is-active' : ''}
+                onClick={() => onToolMode(tool.mode)}
+                title={tool.label}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  {tool.mode === 'select' && <><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/><path d="M13 13l6 6"/></>}
+                  {tool.mode === 'pen' && <><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></>}
+                  {tool.mode === 'pencil' && <><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></>}
+                  {tool.mode === 'freeform-highlight' && <><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" opacity="0.55"/><rect x="2" y="16" width="16" height="5" rx="1" fill="currentColor" opacity="0.35"/></>}
+                  {tool.mode === 'eraser' && <><path d="M20 20H7L3 16c-.8-.8-.8-2 0-2.8L14 2.2c.8-.8 2-.8 2.8 0L20 5.5"/><path d="M6 17l3 3"/><path d="M18 4l3 3"/><path d="M10 12l4 4"/></>}
+                  {tool.mode === 'textbox' && <><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M7 8h10"/><path d="M7 12h10"/><path d="M7 16h6"/></>}
+                </svg>
+              </button>
+            ))}
+          </div>
+
+          {isInkTool && activeSettings && (
+            <>
+              {toolMode !== 'eraser' ? (
+                <div className="floating-toolbar-color-row">
+                  {INK_COLORS.map((color) => (
+                    <button
+                      key={color}
+                      type="button"
+                      className={activeColor === color ? 'is-active' : ''}
+                      style={{ backgroundColor: color }}
+                      onClick={() => {
+                        const key = toolMode === 'pen' ? 'pen' : toolMode === 'pencil' ? 'pencil' : 'highlight'
+                        onSettingsChange({ ...settings, [key]: { ...activeSettings, color } })
+                      }}
+                      aria-label={`Color ${color}`}
+                    />
+                  ))}
+                </div>
+              ) : null}
+
+              <label className="floating-toolbar-size-row">
+                <span>Size</span>
+                <input
+                  type="range"
+                  min="1"
+                  max={toolMode === 'freeform-highlight' ? 42 : toolMode === 'eraser' ? 72 : 18}
+                  value={activeSize}
+                  onChange={(event) => {
+                    const key = toolMode === 'pen' ? 'pen' : toolMode === 'pencil' ? 'pencil' : toolMode === 'freeform-highlight' ? 'highlight' : 'eraser'
+                    onSettingsChange({ ...settings, [key]: { ...activeSettings, size: Number(event.target.value) } })
+                  }}
+                />
+                <span className="floating-toolbar-size-value">{activeSize}</span>
+              </label>
+
+              <div className="floating-toolbar-actions-row">
+                <button type="button" disabled={!canUndo} onClick={onUndo} title="Undo">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+                </button>
+                <button type="button" onClick={onClearPage} title="Clear page ink">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
     </aside>
   )
 }
 
-function Modal({ title, children, onClose }: { title: string; children: React.ReactNode; onClose: () => void }) {
+function Modal({
+  title,
+  children,
+  onClose,
+  className = ''
+}: {
+  title: string
+  children: React.ReactNode
+  onClose: () => void
+  className?: string
+}) {
   return (
-    <div className="mobile-modal-backdrop" role="presentation">
-      <section className="mobile-modal" role="dialog" aria-modal="true" aria-label={title}>
-        <header>
-          <h2>{title}</h2>
-          <button className="mobile-modal-close" type="button" aria-label="Close" onClick={onClose}>×</button>
-        </header>
-        <div className="mobile-modal-body">{children}</div>
-      </section>
-    </div>
+    <ModalPortal>
+      <div className="mobile-modal-backdrop" role="presentation">
+        <section className={`mobile-modal ${className}`.trim()} role="dialog" aria-modal="true" aria-label={title}>
+          <header>
+            <h2>{title}</h2>
+            <button className="mobile-modal-close" type="button" aria-label="Close" onClick={onClose}>×</button>
+          </header>
+          <div className="mobile-modal-body">{children}</div>
+        </section>
+      </div>
+    </ModalPortal>
   )
 }
 
@@ -3326,7 +3959,17 @@ function MoreSettingsPanel({
             <li>Backup to the cloud</li>
             <li>Inking, multiple documents per project, tagging, and all latest features</li>
           </ul>
-          <button className="lt-primary-button" type="button" onClick={() => updateSyncEnabled(true)}>Start Trial</button>
+          <div className="lt-sync-status-card">
+            <strong>{workspace.settings.syncEnabled ? 'Syncing Enabled' : 'Syncing Disabled'}</strong>
+            <span>
+              {workspace.settings.syncEnabled
+                ? 'LiquidText-style syncing mode is enabled for this workspace.'
+                : 'Enable syncing mode to prepare this workspace for cross-device sync.'}
+            </span>
+          </div>
+          <button className="lt-primary-button" type="button" onClick={() => updateSyncEnabled(!workspace.settings.syncEnabled)}>
+            {workspace.settings.syncEnabled ? 'Disable Syncing' : 'Enable Syncing'}
+          </button>
         </SettingsFloatingMenu>
       ) : null}
 
@@ -3545,7 +4188,59 @@ function ToggleLine({
 }
 
 
+const PAGE_EDIT_TABS = [
+  { key: 'insert', label: 'Insert Pages' },
+  { key: 'delete', label: 'Delete Pages' },
+  { key: 'rotate', label: 'Rotate Pages' },
+  { key: 'edit', label: 'Extract Pages' }
+] as const
+
+function PageEditorThumbnail({
+  page,
+  pageNumber,
+  rotation = 0
+}: {
+  page: PDFPageProxy
+  pageNumber: number
+  rotation?: number
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null)
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+
+    let cancelled = false
+    const viewport = page.getViewport({ scale: 0.22, rotation })
+    const context = canvas.getContext('2d')
+    if (!context) return
+
+    canvas.width = viewport.width
+    canvas.height = viewport.height
+    canvas.style.width = `${viewport.width}px`
+    canvas.style.height = `${viewport.height}px`
+
+    const task = page.render({ canvas, canvasContext: context, viewport })
+
+    task.promise.catch((error) => {
+      if (!cancelled && !isExpectedPdfCancellation(error)) console.error(`Failed thumbnail page ${pageNumber}:`, error)
+    })
+
+    return () => {
+      cancelled = true
+      try {
+        task.cancel()
+      } catch (error) {
+        if (!isExpectedPdfCancellation(error)) console.error(`Failed to cancel thumbnail page ${pageNumber}:`, error)
+      }
+    }
+  }, [page, pageNumber, rotation])
+
+  return <canvas className="page-editor-thumbnail-canvas" ref={canvasRef} />
+}
+
 function PageEditPanel({
+  pages,
   pageCount,
   currentPage,
   deletedPages,
@@ -3557,6 +4252,7 @@ function PageEditPanel({
   onDeletePage,
   onExtractPage
 }: {
+  pages?: PDFPageProxy[]
   pageCount: number
   currentPage: number
   deletedPages: Set<number>
@@ -3569,9 +4265,57 @@ function PageEditPanel({
   onExtractPage: (pageNumber: number) => void
 }) {
   const [selectedPage, setSelectedPage] = useState(currentPage)
-  const [actionMode, setActionMode] = useState<'insert' | 'edit' | 'delete' | 'rotate'>('rotate')
+  const [actionMode, setActionMode] = useState<'insert' | 'edit' | 'delete' | 'rotate' | null>(null)
+  const [visibleActionMode, setVisibleActionMode] = useState<'insert' | 'edit' | 'delete' | 'rotate' | null>(null)
+  const [sectionClosing, setSectionClosing] = useState(false)
+
   const selectedRotation = rotations[selectedPage] ?? 0
   const selectedDeleted = deletedPages.has(selectedPage)
+
+  function openAction(mode: 'insert' | 'edit' | 'delete' | 'rotate') {
+    if (visibleActionMode === mode && !sectionClosing) {
+      closeAction()
+      return
+    }
+
+    if (visibleActionMode === 'rotate' && mode !== 'rotate') {
+      setSectionClosing(true)
+      setActionMode(mode)
+      window.setTimeout(() => {
+        setVisibleActionMode(mode)
+        setSectionClosing(false)
+      }, 240)
+      return
+    }
+
+    setSectionClosing(false)
+    setActionMode(mode)
+    setVisibleActionMode(mode)
+  }
+
+  function closeAction() {
+    if (!visibleActionMode) return
+    setSectionClosing(true)
+    window.setTimeout(() => {
+      setVisibleActionMode(null)
+      setActionMode(null)
+      setSectionClosing(false)
+    }, 240)
+  }
+
+  useEffect(() => {
+    if (visibleActionMode !== 'rotate' || sectionClosing) return
+
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target as Element | null
+      if (target?.closest('.mobile-page-editor-section')) return
+      if (target?.closest('.mobile-page-editor-mode-tabs')) return
+      closeAction()
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown, true)
+    return () => document.removeEventListener('pointerdown', handlePointerDown, true)
+  }, [visibleActionMode, sectionClosing])
 
   return (
     <div className="mobile-page-editor-modal">
@@ -3583,11 +4327,37 @@ function PageEditPanel({
             <small>{selectedDeleted ? 'Marked deleted' : `${selectedRotation}° rotation`}</small>
           </div>
           <div className="mobile-page-editor-mode-tabs" role="tablist" aria-label="Page edit actions">
-            {(['insert', 'edit', 'delete', 'rotate'] as const).map((mode) => (
-              <button key={mode} className={actionMode === mode ? 'is-active' : ''} type="button" onClick={() => setActionMode(mode)}>
-                {mode[0].toUpperCase() + mode.slice(1)}
+            {PAGE_EDIT_TABS.map((tab) => (
+              <button
+                key={tab.key}
+                className={actionMode === tab.key && !sectionClosing ? 'is-active' : ''}
+                type="button"
+                onClick={() => {
+                  if (tab.key === 'insert') {
+                    onInsertPage(selectedPage)
+                    openAction(tab.key)
+                    return
+                  }
+                  if (tab.key === 'delete') {
+                    onDeletePage(selectedPage)
+                    openAction(tab.key)
+                    return
+                  }
+                  if (tab.key === 'edit') {
+                    onExtractPage(selectedPage)
+                    openAction(tab.key)
+                    return
+                  }
+                  openAction(tab.key)
+                }}
+              >
+                {tab.label}
               </button>
             ))}
+
+            <button className="page-editor-select-all" type="button" onClick={() => setSelectedPage(1)}>
+              Select All
+            </button>
           </div>
         </div>
         <div className="mobile-page-editor-pages" aria-label="Pages">
@@ -3595,42 +4365,42 @@ function PageEditPanel({
             const pageNumber = index + 1
             const isDeleted = deletedPages.has(pageNumber)
             return (
-              <button key={pageNumber} className={`mobile-page-card${pageNumber === selectedPage ? ' is-active' : ''}${isDeleted ? ' is-deleted' : ''}`} type="button" onClick={() => { setSelectedPage(pageNumber); onGoToPage(pageNumber) }}>
+              <button
+                key={pageNumber}
+                className={`mobile-page-card${pageNumber === selectedPage ? ' is-active' : ''}${isDeleted ? ' is-deleted' : ''}`}
+                type="button"
+                onClick={() => setSelectedPage(pageNumber)}
+                onDoubleClick={() => onGoToPage(pageNumber)}
+              >
+                <span className="page-editor-thumb">
+                  {pages?.[index] && !isDeleted ? (
+                    <PageEditorThumbnail
+                      page={pages[index]}
+                      pageNumber={pageNumber}
+                      rotation={rotations[pageNumber] ?? 0}
+                    />
+                  ) : (
+                    <span className="page-editor-blank-thumb" />
+                  )}
+                  <em className="page-editor-check" aria-hidden="true" />
+                </span>
                 <strong>{pageNumber}</strong>
-                <span>{isDeleted ? 'Deleted' : rotations[pageNumber] ? `${rotations[pageNumber]}°` : 'Ready'}</span>
               </button>
             )
           })}
         </div>
-        <section className="mobile-page-editor-section">
-          <h4>{actionMode === 'rotate' ? 'Rotate Pages' : actionMode === 'insert' ? 'Insert Pages' : actionMode === 'delete' ? 'Delete Pages' : 'Edit Pages'}</h4>
-          {actionMode === 'rotate' ? (
-            <>
-              <div className="mobile-page-editor-actions">
-                <button type="button" onClick={() => onRotateCurrent(90, selectedPage)}>Rotate 90° Clockwise</button>
-                <button type="button" onClick={() => onRotateCurrent(-90, selectedPage)}>Rotate 90° Anticlockwise</button>
-                <button type="button" onClick={() => onRotateCurrent(180, selectedPage)}>Rotate 180° Clockwise</button>
-                <button type="button" onClick={() => onRotateAll(90)}>Apply to All Pages (90° CW)</button>
-              </div>
-              <p className="mobile-settings-hint">Selected page rotation: {selectedRotation}°</p>
-            </>
-          ) : actionMode === 'insert' ? (
-            <>
-              <button className="mobile-primary-button" type="button" onClick={() => onInsertPage(selectedPage)}>Insert Blank Page After {selectedPage}</button>
-              <p className="mobile-settings-hint">Creates an insert-page edit entry after the selected page.</p>
-            </>
-          ) : actionMode === 'delete' ? (
-            <>
-              <button className="mobile-primary-button mobile-danger-button" type="button" onClick={() => onDeletePage(selectedPage)}>Delete Page {selectedPage}</button>
-              <p className="mobile-settings-hint">Marks this page deleted in the edit manifest.</p>
-            </>
-          ) : (
-            <>
-              <button className="mobile-primary-button" type="button" onClick={() => onExtractPage(selectedPage)}>Extract Page {selectedPage}</button>
-              <p className="mobile-settings-hint">Creates a small extraction manifest for this page.</p>
-            </>
-          )}
-        </section>
+        {visibleActionMode === 'rotate' ? (
+          <section className={`mobile-page-editor-section${sectionClosing ? ' is-fading-out' : ''}`}>
+            <h4>Rotate Pages</h4>
+            <div className="mobile-page-editor-actions">
+              <button type="button" onClick={() => onRotateCurrent(90, selectedPage)}>Rotate 90° Clockwise</button>
+              <button type="button" onClick={() => onRotateCurrent(-90, selectedPage)}>Rotate 90° Anticlockwise</button>
+              <button type="button" onClick={() => onRotateCurrent(180, selectedPage)}>Rotate 180° Clockwise</button>
+              <button type="button" onClick={() => onRotateAll(90)}>Apply to All Pages (90° CW)</button>
+            </div>
+            <p className="mobile-settings-hint">Selected page {selectedPage}: {selectedRotation}°</p>
+          </section>
+        ) : null}
       </div>
     </div>
   )
@@ -3981,6 +4751,7 @@ function ImprovedChooseLayoutPopup({
 function SelectionActionPopup({
   popup,
   bookmarked,
+  availableTags,
   onExcerpt,
   onComment,
   onBookmark,
@@ -3992,6 +4763,7 @@ function SelectionActionPopup({
 }: {
   popup: SelectionPopupState
   bookmarked: boolean
+  availableTags: string[]
   onExcerpt: () => void
   onComment: () => void
   onBookmark: () => void
@@ -4127,7 +4899,7 @@ function SelectionActionPopup({
             <div className="selection-action-tag-empty">No tags allocated</div>
           )}
           <div className="selection-action-tag-presets" aria-label="Suggested tags">
-            {TAG_PRESETS.map((tag) => {
+            {availableTags.map((tag) => {
               const active = allocatedTags.includes(tag)
               return (
                 <button key={tag} type="button" className={`selection-action-tag-preset${active ? ' is-active' : ''}`} onClick={() => {
@@ -4188,13 +4960,6 @@ function Icon({ name }: { name: IconName }) {
   if (name === 'docs') return <svg {...common}><path d="M6 3h9l3 3v15H6V3Z" /><path d="M14 3v4h4" /><path d="M9 13h6" /><path d="M12 10v6" /></svg>
   if (name === 'more') return <svg {...common}><circle cx="5" cy="12" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /></svg>
   return <svg {...common}><path d="M4 4 14 20l2-7 6-2L4 4Z" /></svg>
-}
-
-function toolIcon(mode: ToolMode): IconName {
-  if (mode === 'pen' || mode === 'pencil') return 'pen'
-  if (mode === 'freeform-highlight') return 'highlighter'
-  if (mode === 'eraser') return 'eraser'
-  return 'select'
 }
 
 function captureReadableSelection(root: HTMLElement) {

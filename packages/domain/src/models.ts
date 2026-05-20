@@ -75,6 +75,7 @@ export interface CanvasNode {
   kind: 'excerpt' | 'comment' | 'note' | 'text'
   excerptId?: string
   documentId?: string
+  workspaceBoardId?: string
   sourceAnchorId?: string
   selectionColor?: string
   nodeColor?: string

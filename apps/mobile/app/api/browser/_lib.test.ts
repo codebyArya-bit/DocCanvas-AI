@@ -3,6 +3,7 @@ import {
   extractSearchQuery,
   normalizeNavigationInput,
   normalizeSearchEngine,
+  safeDefineBrowserProperty,
   searchUrlFor,
   shouldReusePreviewCache
 } from './_lib'
@@ -35,3 +36,12 @@ const cachedPreview = {
 assert.equal(shouldReusePreviewCache(cachedPreview, 'https://www.bing.com/', 1200, 420), true)
 assert.equal(shouldReusePreviewCache(cachedPreview, 'https://www.bing.com/search?q=notes', 1200, 420), false)
 assert.equal(shouldReusePreviewCache(cachedPreview, 'https://www.bing.com/', 1600, 420), false)
+
+assert.equal(safeDefineBrowserProperty(undefined, 'language', { get: () => 'en-US' }), false)
+assert.equal(safeDefineBrowserProperty(null, 'language', { get: () => 'en-US' }), false)
+assert.equal(safeDefineBrowserProperty('navigator', 'language', { get: () => 'en-US' }), false)
+const browserLike = {}
+assert.equal(safeDefineBrowserProperty(browserLike, 'language', { configurable: true, get: () => 'en-US' }), true)
+assert.equal((browserLike as { language?: string }).language, 'en-US')
+const blockedBrowserLike = Object.preventExtensions({})
+assert.equal(safeDefineBrowserProperty(blockedBrowserLike, 'language', { value: 'en-US' }), false)

@@ -56,6 +56,14 @@ export interface MobileFolder {
   updatedAt: string
 }
 
+export type MobileWorkspaceBoard = {
+  id: string
+  documentId: string
+  name: string
+  createdAt: string
+  updatedAt: string
+}
+
 export interface MobileWorkspaceState {
   workspaceId: string
   nodes: CanvasNode[]
@@ -64,6 +72,8 @@ export interface MobileWorkspaceState {
   bookmarks: Bookmark[]
   canvasEdges: CanvasEdge[]
   workspaceLinks: MobileWorkspaceLink[]
+  workspaceBoards?: MobileWorkspaceBoard[]
+  activeWorkspaceBoardId?: string | null
   workspaceViewport: MobileWorkspaceViewport
   toolMode?: ToolMode
   toolSettings: MobileToolSettings
@@ -409,6 +419,15 @@ export function normalizeMobileWorkspaceState(
   state: MobileWorkspaceState | null | undefined,
   workspaceId = MOBILE_WORKSPACE_ID
 ): MobileWorkspaceState {
+  const now = new Date().toISOString()
+  const defaultBoard: MobileWorkspaceBoard = {
+    id: 'default-board',
+    documentId: state?.activeDocumentId ?? 'default',
+    name: 'Workspace 1',
+    createdAt: now,
+    updatedAt: now
+  }
+  const workspaceBoards = state?.workspaceBoards?.length ? state.workspaceBoards : [defaultBoard]
   return {
     workspaceId,
     nodes: state?.nodes ?? [],
@@ -417,6 +436,8 @@ export function normalizeMobileWorkspaceState(
     bookmarks: state?.bookmarks ?? [],
     canvasEdges: state?.canvasEdges ?? [],
     workspaceLinks: state?.workspaceLinks ?? [],
+    workspaceBoards,
+    activeWorkspaceBoardId: state?.activeWorkspaceBoardId ?? workspaceBoards[0]?.id ?? 'default-board',
     workspaceViewport: normalizeWorkspaceViewport(state?.workspaceViewport),
     toolMode: state?.toolMode ?? 'select',
     toolSettings: normalizeToolSettings(state?.toolSettings),
@@ -457,7 +478,7 @@ export function normalizeMobileWorkspaceState(
     historyPast: state?.historyPast ?? [],
     historyFuture: state?.historyFuture ?? [],
     activeDocumentId: state?.activeDocumentId,
-    updatedAt: state?.updatedAt ?? new Date().toISOString()
+    updatedAt: state?.updatedAt ?? now
   }
 }
 

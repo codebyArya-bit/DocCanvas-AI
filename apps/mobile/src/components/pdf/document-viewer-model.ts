@@ -72,6 +72,7 @@ function buildNode(selection: SelectionArtifactInput, kind: 'excerpt' | 'comment
     kind,
     excerptId: excerpt?.id,
     documentId: selection.documentId,
+    workspaceBoardId: selection.workspaceBoardId ?? 'default-board',
     sourceAnchorId: anchor.id,
     selectionColor: selection.selectionColor,
     nodeColor: undefined,
@@ -238,6 +239,7 @@ export function buildFreeNode({ kind, workspace, documentId }: { kind: 'text' | 
     workspaceId: workspace.workspaceId,
     kind,
     documentId,
+    workspaceBoardId: workspace.activeWorkspaceBoardId ?? 'default-board',
     nodeColor: kind === 'comment' ? '#fff7d6' : '#ffffff',
     title: kind === 'comment' ? 'Comment' : 'Text',
     text: '',
@@ -290,16 +292,69 @@ export function sourceKindLabel(kind: MobileDocumentSourceKind) {
 
 type SearchHit = { text: string; pageNumber: number }
 
-export function buildSemanticSearchIndex(record: MobileDocumentRecord | null): SearchHit[] {
+export function buildSemanticSearchIndex(record: MobileDocumentRecord | null, workspace?: MobileWorkspaceState | null): SearchHit[] {
   if (!record) return []
-  if (record.textChunksWithOffsets?.length) return record.textChunksWithOffsets.map((chunk, index) => ({ text: chunk.text.toLowerCase(), pageNumber: index + 1 }))
+  const anchorHits = (workspace?.anchors ?? [])
+    .filter((anchor) => anchor.documentId === record.document.id)
+    .map((anchor) => ({
+      text: [anchor.textQuote, ...(anchor.tags ?? [])].join(' ').toLowerCase(),
+      pageNumber: anchor.pageNumber
+    }))
+  if (record.textChunksWithOffsets?.length) return [
+    ...record.textChunksWithOffsets.map((chunk, index) => ({ text: chunk.text.toLowerCase(), pageNumber: index + 1 })),
+    ...anchorHits
+  ]
   const text = (record.textContent ?? record.markdown ?? record.webContent?.sections.map((section) => section.text).join('\n') ?? '').toLowerCase()
-  return text ? [{ text, pageNumber: 1 }] : []
+  return text ? [{ text, pageNumber: 1 }, ...anchorHits] : anchorHits
 }
 
 export function findSemanticSearchHit(index: SearchHit[], query: string) {
   const normalized = query.toLowerCase().trim()
-  return normalized ? index.find((entry) => entry.text.includes(normalized)) ?? null : null
+  if (!normalized) return null
+  const exact = index.find((entry) => entry.text.includes(normalized))
+  if (exact) return exact
+  return findBm25SearchHit(index, normalized)
+}
+
+export function findBm25SearchHit(index: SearchHit[], query: string) {
+  const queryTerms = tokenizeSearchText(query)
+  if (queryTerms.length === 0 || index.length === 0) return null
+
+  const documents = index.map((entry) => ({ entry, terms: tokenizeSearchText(entry.text) }))
+  const averageLength = documents.reduce((sum, document) => sum + document.terms.length, 0) / Math.max(1, documents.length)
+  const documentFrequency = new Map<string, number>()
+  documents.forEach((document) => {
+    new Set(document.terms).forEach((term) => documentFrequency.set(term, (documentFrequency.get(term) ?? 0) + 1))
+  })
+
+  const k1 = 1.2
+  const b = 0.75
+  let bestEntry: SearchHit | null = null
+  let bestScore = 0
+  documents.forEach((document) => {
+    const termCounts = new Map<string, number>()
+    document.terms.forEach((term) => termCounts.set(term, (termCounts.get(term) ?? 0) + 1))
+    const score = queryTerms.reduce((total, term) => {
+      const frequency = termCounts.get(term) ?? 0
+      if (frequency === 0) return total
+      const df = documentFrequency.get(term) ?? 0
+      const idf = Math.log(1 + (documents.length - df + 0.5) / (df + 0.5))
+      const denominator = frequency + k1 * (1 - b + b * (document.terms.length / Math.max(1, averageLength)))
+      return total + idf * ((frequency * (k1 + 1)) / denominator)
+    }, 0)
+    if (score > bestScore) {
+      bestEntry = document.entry
+      bestScore = score
+    }
+  })
+  return bestEntry
+}
+
+function tokenizeSearchText(value: string) {
+  return value
+    .toLowerCase()
+    .split(/[^a-z0-9]+/i)
+    .filter((term) => term.length > 1)
 }
 
 export function decideNavigation({

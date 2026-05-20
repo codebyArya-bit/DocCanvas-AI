@@ -9,6 +9,7 @@ export interface PdfSelection {
 export interface SelectionArtifactInput {
   workspaceId: string
   documentId: string
+  workspaceBoardId?: string
   text: string
   pageNumber: number
   startSpanIndex?: number

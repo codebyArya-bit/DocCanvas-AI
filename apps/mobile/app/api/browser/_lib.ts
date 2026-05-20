@@ -150,6 +150,20 @@ export function shouldReusePreviewCache(
   return Boolean(cached && cached.url === url && now - cached.capturedAt <= maxAgeMs)
 }
 
+export function safeDefineBrowserProperty(
+  target: unknown,
+  property: PropertyKey,
+  descriptor: PropertyDescriptor
+) {
+  if ((typeof target !== 'object' && typeof target !== 'function') || target === null) return false
+  try {
+    Object.defineProperty(target, property, descriptor)
+    return true
+  } catch {
+    return false
+  }
+}
+
 export function homeUrlFor(engine: 'duckduckgo' | 'bing' | 'google') {
   if (engine === 'bing') return 'https://www.bing.com/?mkt=en-US&setlang=en-US&cc=US&ensearch=1'
   if (engine === 'google') return 'https://www.google.com/?hl=en&gl=US'
@@ -206,15 +220,23 @@ export async function createBrowserSession(startUrl: string) {
   await context.addInitScript(() => {
     const language = 'en-US'
     const languages = ['en-US', 'en']
-    Object.defineProperty(navigator, 'language', {
+    const safeDefine = (target: unknown, property: PropertyKey, descriptor: PropertyDescriptor) => {
+      if ((typeof target !== 'object' && typeof target !== 'function') || target === null) return
+      try {
+        Object.defineProperty(target, property, descriptor)
+      } catch {}
+    }
+    const nav = globalThis.navigator
+    safeDefine(nav, 'language', {
       configurable: true,
       get: () => language
     })
-    Object.defineProperty(navigator, 'languages', {
+    safeDefine(nav, 'languages', {
       configurable: true,
       get: () => languages
     })
-    Object.defineProperty(navigator, 'webdriver', {
+    safeDefine(nav, 'webdriver', {
+      configurable: true,
       get: () => false
     })
     // Mock chrome object to avoid basic bot detection

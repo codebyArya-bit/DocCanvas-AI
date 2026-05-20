@@ -38,6 +38,7 @@ interface SelectionManagerProps {
   rootRef: React.RefObject<HTMLDivElement | null>
   workspaceId: string
   documentId: string
+  availableTags?: string[]
   bookmarkedAnchorIds?: string[]
   linkedAnchorIds?: string[]
   popupState?: SelectionPopupState | null
@@ -55,6 +56,7 @@ export function SelectionManager({
   rootRef,
   workspaceId,
   documentId,
+  availableTags = [],
   bookmarkedAnchorIds,
   linkedAnchorIds,
   popupState: controlledPopupState,
@@ -338,6 +340,7 @@ export function SelectionManager({
         <PdfSelectionActionPopup
           key={popupState.anchorId}
           popup={popupState}
+          availableTags={availableTags}
           bookmarked={bookmarkedSet.has(popupState.anchorId)}
           onSizeChange={setPopupSize}
           onAutoExcerpt={() => {
@@ -376,6 +379,7 @@ export function SelectionManager({
 function PdfSelectionActionPopup({
   popup,
   bookmarked,
+  availableTags,
   onAutoExcerpt,
   onComment,
   onBookmark,
@@ -386,6 +390,7 @@ function PdfSelectionActionPopup({
 }: {
   popup: SelectionPopupState
   bookmarked: boolean
+  availableTags: string[]
   onAutoExcerpt: () => void
   onComment: () => void
   onBookmark: () => void
@@ -401,7 +406,7 @@ function PdfSelectionActionPopup({
   const tagsInputRef = useRef<HTMLInputElement | null>(null)
   const [popupSize, setPopupSize] = useState({ width: 320, height: 58 })
   const swatches = ['#ff6b6b', '#2ecc71', '#5d5df6', '#ffd400', '#db38ff', '#00b8d9']
-  const presets = ['important', 'question', 'evidence', 'counterpoint', 'defined-term', 'follow-up']
+  const presets = Array.from(new Set(['important', 'question', 'evidence', 'counterpoint', 'defined-term', 'follow-up', ...availableTags]))
   const tags = tagDraft.split(',').map((tag) => tag.trim().replace(/^#/, '')).filter(Boolean)
   const allocatedTags = popup.tags
   const color = popup.selection.selectionColor ?? '#5d5df6'
