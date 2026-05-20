@@ -4282,12 +4282,47 @@ function PageEditPanel({
   onExtractPage: (pageNumber: number) => void
 }) {
   const [selectedPage, setSelectedPage] = useState(currentPage)
+  const [selectedPages, setSelectedPages] = useState<Set<number>>(() => new Set([currentPage]))
   const [actionMode, setActionMode] = useState<'insert' | 'edit' | 'delete' | 'rotate' | null>(null)
   const [visibleActionMode, setVisibleActionMode] = useState<'insert' | 'edit' | 'delete' | 'rotate' | null>(null)
   const [sectionClosing, setSectionClosing] = useState(false)
 
   const selectedRotation = rotations[selectedPage] ?? 0
   const selectedDeleted = deletedPages.has(selectedPage)
+  const selectedPageNumbers = useMemo(
+    () => Array.from(selectedPages)
+      .filter((pageNumber) => pageNumber >= 1 && pageNumber <= pageCount)
+      .sort((left, right) => left - right),
+    [pageCount, selectedPages]
+  )
+  const allPagesSelected = pageCount > 0 && selectedPageNumbers.length === pageCount
+  const selectedLabel = selectedPageNumbers.length > 1 ? `${selectedPageNumbers.length} pages` : `Page ${selectedPage}`
+
+  useEffect(() => {
+    setSelectedPages((current) => {
+      const next = new Set(Array.from(current).filter((pageNumber) => pageNumber >= 1 && pageNumber <= pageCount))
+      if (next.size === 0 && pageCount > 0) next.add(Math.min(currentPage, pageCount))
+      return next
+    })
+  }, [currentPage, pageCount])
+
+  function selectSinglePage(pageNumber: number) {
+    setSelectedPage(pageNumber)
+    setSelectedPages(new Set([pageNumber]))
+  }
+
+  function toggleSelectAllPages() {
+    if (allPagesSelected) {
+      setSelectedPages(new Set([selectedPage]))
+      return
+    }
+    setSelectedPages(new Set(Array.from({ length: pageCount }, (_, index) => index + 1)))
+  }
+
+  function runForSelectedPages(action: (pageNumber: number) => void) {
+    const pagesToUpdate = selectedPageNumbers.length ? selectedPageNumbers : [selectedPage]
+    pagesToUpdate.forEach(action)
+  }
 
   function openAction(mode: 'insert' | 'edit' | 'delete' | 'rotate') {
     if (visibleActionMode === mode && !sectionClosing) {
@@ -4340,7 +4375,7 @@ function PageEditPanel({
         <div className="mobile-page-editor-top">
           <div>
             <span className="mobile-page-editor-kicker">Selected</span>
-            <strong>Page {selectedPage}</strong>
+            <strong>{selectedLabel}</strong>
             <small>{selectedDeleted ? 'Marked deleted' : `${selectedRotation}° rotation`}</small>
           </div>
           <div className="mobile-page-editor-mode-tabs" role="tablist" aria-label="Page edit actions">
@@ -4356,12 +4391,12 @@ function PageEditPanel({
                     return
                   }
                   if (tab.key === 'delete') {
-                    onDeletePage(selectedPage)
+                    runForSelectedPages(onDeletePage)
                     openAction(tab.key)
                     return
                   }
                   if (tab.key === 'edit') {
-                    onExtractPage(selectedPage)
+                    runForSelectedPages(onExtractPage)
                     openAction(tab.key)
                     return
                   }
@@ -4372,8 +4407,7 @@ function PageEditPanel({
               </button>
             ))}
 
-            <button className="page-editor-select-all" type="button" onClick={() => setSelectedPage(1)}>
-              Select All
+            <button className="page-editor-select-all" type="button" onClick={toggleSelectAllPages}>`r`n              {allPagesSelected ? 'Clear All' : 'Select All'}
             </button>
           </div>
         </div>
@@ -4384,9 +4418,9 @@ function PageEditPanel({
             return (
               <button
                 key={pageNumber}
-                className={`mobile-page-card${pageNumber === selectedPage ? ' is-active' : ''}${isDeleted ? ' is-deleted' : ''}`}
+                className={`mobile-page-card${selectedPages.has(pageNumber) ? ' is-active' : ''}${isDeleted ? ' is-deleted' : ''}`}
                 type="button"
-                onClick={() => setSelectedPage(pageNumber)}
+                onClick={() => selectSinglePage(pageNumber)}
                 onDoubleClick={() => onGoToPage(pageNumber)}
               >
                 <span className="page-editor-thumb">
@@ -4410,12 +4444,12 @@ function PageEditPanel({
           <section className={`mobile-page-editor-section${sectionClosing ? ' is-fading-out' : ''}`}>
             <h4>Rotate Pages</h4>
             <div className="mobile-page-editor-actions">
-              <button type="button" onClick={() => onRotateCurrent(90, selectedPage)}>Rotate 90° Clockwise</button>
-              <button type="button" onClick={() => onRotateCurrent(-90, selectedPage)}>Rotate 90° Anticlockwise</button>
-              <button type="button" onClick={() => onRotateCurrent(180, selectedPage)}>Rotate 180° Clockwise</button>
+              <button type="button" onClick={() => runForSelectedPages((pageNumber) => onRotateCurrent(90, pageNumber))}>Rotate 90° Clockwise</button>
+              <button type="button" onClick={() => runForSelectedPages((pageNumber) => onRotateCurrent(-90, pageNumber))}>Rotate 90° Anticlockwise</button>
+              <button type="button" onClick={() => runForSelectedPages((pageNumber) => onRotateCurrent(180, pageNumber))}>Rotate 180° Clockwise</button>
               <button type="button" onClick={() => onRotateAll(90)}>Apply to All Pages (90° CW)</button>
             </div>
-            <p className="mobile-settings-hint">Selected page {selectedPage}: {selectedRotation}°</p>
+            <p className="mobile-settings-hint">{selectedPageNumbers.length > 1 ? ${selectedPageNumbers.length} selected pages : Selected page : °}</p>
           </section>
         ) : null}
       </div>
@@ -5514,4 +5548,5 @@ function findSourceAnchorIdFromPointer(clientX: number, clientY: number) {
 function findAnnotatedPageFromPointer(event: React.PointerEvent<HTMLElement>) {
   return findAnnotatedPage(event.target) ?? findAnnotatedPage(document.elementFromPoint(event.clientX, event.clientY))
 }
+
 
