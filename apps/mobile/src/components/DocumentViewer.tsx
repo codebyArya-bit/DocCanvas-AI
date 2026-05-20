@@ -1254,7 +1254,11 @@ export function DocumentViewer({ docId }: { docId: string }) {
   }
 
   function deleteTextbox(textboxId: string) {
-    updateWorkspace((current) => dispatchInteractionAction(current, { type: 'DELETE_SOURCE_TEXTBOX', textboxId }))
+    updateWorkspace((current) => ({
+      ...current,
+      sourceTextboxes: (current.sourceTextboxes ?? []).filter((textbox) => textbox.id !== textboxId),
+      updatedAt: new Date().toISOString()
+    }))
   }
 
   function deleteWorkspaceNode(nodeId: string) {
@@ -3531,7 +3535,20 @@ function SourceTextboxView({
         }}
       >
         <span>Text</span>
-        <button type="button" onClick={(event) => { event.stopPropagation(); onDelete(textbox.id) }}>Delete</button>
+        <button
+          type="button"
+          onPointerDown={(event) => {
+            event.preventDefault()
+            event.stopPropagation()
+          }}
+          onClick={(event) => {
+            event.preventDefault()
+            event.stopPropagation()
+            onDelete(textbox.id)
+          }}
+        >
+          Delete
+        </button>
       </div>
       <textarea
         className="mobile-source-textbox shared-textbox-editor"
@@ -5497,3 +5514,4 @@ function findSourceAnchorIdFromPointer(clientX: number, clientY: number) {
 function findAnnotatedPageFromPointer(event: React.PointerEvent<HTMLElement>) {
   return findAnnotatedPage(event.target) ?? findAnnotatedPage(document.elementFromPoint(event.clientX, event.clientY))
 }
+
