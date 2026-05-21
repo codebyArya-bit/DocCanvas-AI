@@ -23,7 +23,8 @@ export function resolveSelectionPopupPosition({
   viewportWidth,
   viewportHeight,
   selectionRect,
-  selectionRects
+  selectionRects,
+  viewportSafeTop
 }: {
   preferredLeft: number
   preferredTop: number
@@ -33,13 +34,15 @@ export function resolveSelectionPopupPosition({
   viewportHeight: number
   selectionRect?: SelectionViewportRect
   selectionRects?: SelectionViewportRect[]
+  viewportSafeTop?: number
 }): SelectionPopupPosition {
   const margin = 12
+  const safeTop = Math.max(margin, viewportSafeTop ?? margin)
   const gap = 12
   const maxLeft = Math.max(margin, viewportWidth - popupWidth - margin)
-  const maxTop = Math.max(margin, viewportHeight - popupHeight - margin)
+  const maxTop = Math.max(safeTop, viewportHeight - popupHeight - margin)
   const clampLeft = (value: number) => clampValue(value, margin, maxLeft)
-  const clampTop = (value: number) => clampValue(value, margin, maxTop)
+  const clampTop = (value: number) => clampValue(value, safeTop, maxTop)
 
   if (!selectionRect) {
     return { left: clampLeft(preferredLeft), top: clampTop(preferredTop), placement: 'clamped' }
@@ -55,14 +58,14 @@ export function resolveSelectionPopupPosition({
   const rightLeft = selectionRect.right + gap
   const leftLeft = selectionRect.left - popupWidth - gap
   const candidates: Array<SelectionPopupPosition & { priority: number; fitsWithoutClamp: boolean }> = [
-    { left: clampLeft(centeredLeft), top: clampTop(aboveTop), placement: 'above', priority: 0, fitsWithoutClamp: aboveTop >= margin },
+    { left: clampLeft(centeredLeft), top: clampTop(aboveTop), placement: 'above', priority: 0, fitsWithoutClamp: aboveTop >= safeTop },
     { left: clampLeft(centeredLeft), top: clampTop(belowTop), placement: 'below', priority: 1, fitsWithoutClamp: belowTop <= maxTop },
     { left: clampLeft(rightLeft), top: clampTop(centeredTop), placement: 'right', priority: 2, fitsWithoutClamp: rightLeft <= maxLeft },
     { left: clampLeft(leftLeft), top: clampTop(centeredTop), placement: 'left', priority: 3, fitsWithoutClamp: leftLeft >= margin }
   ]
 
   const fullyVisibleNonOverlapping = candidates.find((candidate) =>
-    isFullyVisible(candidate, popupWidth, popupHeight, viewportWidth, viewportHeight, margin) &&
+    isFullyVisible(candidate, popupWidth, popupHeight, viewportWidth, viewportHeight, margin, safeTop) &&
     !touchesAnyBlocker(candidate, popupWidth, popupHeight, blockers, gap)
   )
   if (fullyVisibleNonOverlapping) return fullyVisibleNonOverlapping
@@ -89,7 +92,7 @@ export function resolveSelectionPopupPosition({
       const pushedBelowTop = selectionRect.bottom + verticalGap
       const pushedAboveTop = selectionRect.top - popupHeight - verticalGap
       const canMoveBelow = pushedBelowTop + popupHeight <= viewportHeight - margin
-      const canMoveAbove = pushedAboveTop >= margin
+      const canMoveAbove = pushedAboveTop >= safeTop
 
       if (canMoveBelow) top = pushedBelowTop
       else if (canMoveAbove) top = pushedAboveTop
@@ -99,7 +102,7 @@ export function resolveSelectionPopupPosition({
     return { ...candidate, left, top }
   })
 
-  return fallbackCandidates.sort((a, b) => {
+  const chosen = fallbackCandidates.sort((a, b) => {
     const touchDelta =
       Number(touchesAnyBlocker(a, popupWidth, popupHeight, blockers, gap)) -
       Number(touchesAnyBlocker(b, popupWidth, popupHeight, blockers, gap))
@@ -114,6 +117,22 @@ export function resolveSelectionPopupPosition({
     if (priorityDelta !== 0) return priorityDelta
     return distanceFromPreferred(a, preferredLeft, preferredTop) - distanceFromPreferred(b, preferredLeft, preferredTop)
   })[0] ?? { left: clampLeft(preferredLeft), top: clampTop(preferredTop), placement: 'clamped' }
+
+  if (!touchesAnyBlocker(chosen, popupWidth, popupHeight, blockers, gap)) return chosen
+
+  const strictNonOverlap = resolveStrictNonOverlapPosition({
+    centeredLeft,
+    popupWidth,
+    popupHeight,
+    viewportHeight,
+    margin,
+    safeTop,
+    gap,
+    blockers,
+    clampLeft,
+    clampTop
+  })
+  return strictNonOverlap ?? chosen
 }
 
 function fitsWithoutClamp(position: SelectionPopupPosition) {
@@ -130,11 +149,12 @@ function isFullyVisible(
   height: number,
   viewportWidth: number,
   viewportHeight: number,
-  margin: number
+  margin: number,
+  safeTop = margin
 ) {
   return (
     position.left >= margin &&
-    position.top >= margin &&
+    position.top >= safeTop &&
     position.left + width <= viewportWidth - margin &&
     position.top + height <= viewportHeight - margin
   )
@@ -187,6 +207,69 @@ function touchesAnyBlocker(
   gap: number
 ) {
   return rects.some((rect) => isTouchingSelection(position, width, height, rect, gap))
+}
+
+function resolveStrictNonOverlapPosition({
+  centeredLeft,
+  popupWidth,
+  popupHeight,
+  viewportHeight,
+  margin,
+  safeTop,
+  gap,
+  blockers,
+  clampLeft,
+  clampTop
+}: {
+  centeredLeft: number
+  popupWidth: number
+  popupHeight: number
+  viewportHeight: number
+  margin: number
+  safeTop: number
+  gap: number
+  blockers: SelectionViewportRect[]
+  clampLeft: (value: number) => number
+  clampTop: (value: number) => number
+}): SelectionPopupPosition | null {
+  const selectionTop = Math.min(...blockers.map((rect) => rect.top))
+  const selectionBottom = Math.max(...blockers.map((rect) => rect.bottom))
+  const left = clampLeft(centeredLeft)
+  const belowTop = selectionBottom + gap
+  const aboveTop = selectionTop - popupHeight - gap
+  const bottomDockedTop = viewportHeight - popupHeight - margin
+  const candidates: SelectionPopupPosition[] = [
+    { left, top: belowTop, placement: 'below' },
+    { left, top: aboveTop, placement: 'above' },
+    { left, top: bottomDockedTop, placement: 'bottom-docked' }
+  ]
+
+  const valid = candidates
+    .map((candidate) => ({ ...candidate, top: clampTop(candidate.top) }))
+    .filter((candidate) =>
+      candidate.top >= safeTop &&
+      candidate.top + popupHeight <= viewportHeight - margin &&
+      !touchesAnyBlocker(candidate, popupWidth, popupHeight, blockers, gap)
+    )
+
+  if (valid.length > 0) return valid[0]
+
+  const canFitBelowSelection = selectionBottom + gap + popupHeight <= viewportHeight - margin
+  if (canFitBelowSelection) {
+    return { left, top: clampTop(selectionBottom + gap), placement: 'below' }
+  }
+
+  const canFitAboveSelection = selectionTop - popupHeight - gap >= safeTop
+  if (canFitAboveSelection) {
+    return { left, top: clampTop(selectionTop - popupHeight - gap), placement: 'above' }
+  }
+
+  const moreSpaceBelow = viewportHeight - selectionBottom >= selectionTop - safeTop
+  return {
+    left,
+    top: moreSpaceBelow ? clampTop(selectionBottom + gap) : clampTop(selectionTop - popupHeight - gap),
+    placement: 'clamped'
+  }
 }
 
 function distanceFromPreferred(position: SelectionPopupPosition, preferredLeft: number, preferredTop: number) {

@@ -172,6 +172,42 @@ const smallViewportPosition = resolveSelectionPopupPosition({
 assert.equal(popupOverlapsSelection(smallViewportPosition, 300, 150, smallViewportSelection), false)
 assert.ok(['above', 'below', 'bottom-docked'].includes(smallViewportPosition.placement))
 
+const commandbarSafeTopPosition = resolveSelectionPopupPosition({
+  preferredLeft: 100,
+  preferredTop: 20,
+  popupWidth: 280,
+  popupHeight: 120,
+  viewportWidth: 1200,
+  viewportHeight: 800,
+  viewportSafeTop: 92,
+  selectionRect: new DOMRect(100, 80, 140, 20)
+})
+assert.ok(commandbarSafeTopPosition.top >= 92, 'popup should stay below commandbar safe top')
+assert.notEqual(commandbarSafeTopPosition.placement, 'above', 'top selection should not place popup above into commandbar safe zone')
+assert.equal(
+  popupTouchesSelection(commandbarSafeTopPosition, 280, 120, new DOMRect(100, 80, 140, 20)),
+  false,
+  'safe-top popup should not cover selected text'
+)
+
+const commandbarAboveRejectedPosition = resolveSelectionPopupPosition({
+  preferredLeft: 320,
+  preferredTop: 146,
+  popupWidth,
+  popupHeight,
+  viewportWidth,
+  viewportHeight,
+  viewportSafeTop: 150,
+  selectionRect: new DOMRect(320, 130, 160, 28)
+})
+assert.ok(commandbarAboveRejectedPosition.top >= 150, 'above candidate crossing safe top should be rejected')
+assert.notEqual(commandbarAboveRejectedPosition.placement, 'above')
+assert.equal(
+  popupTouchesSelection(commandbarAboveRejectedPosition, popupWidth, popupHeight, new DOMRect(320, 130, 160, 28)),
+  false,
+  'commandbar-constrained popup should still avoid selected text'
+)
+
 const oversizedPopupSelection = new DOMRect(240, 450, 180, 34)
 const oversizedPopupPosition = resolveSelectionPopupPosition({
   preferredLeft: oversizedPopupSelection.left,
@@ -205,6 +241,46 @@ assert.equal(
   'popup should avoid every selected client rect, not only the union bounds'
 )
 
+const commandbarSafeMultiLinePosition = resolveSelectionPopupPosition({
+  preferredLeft: 300,
+  preferredTop: 168,
+  popupWidth,
+  popupHeight,
+  viewportWidth,
+  viewportHeight,
+  viewportSafeTop: 150,
+  selectionRect: new DOMRect(300, 128, 220, 64),
+  selectionRects: [
+    new DOMRect(300, 128, 180, 24),
+    new DOMRect(320, 168, 200, 24)
+  ]
+})
+assert.equal(
+  [new DOMRect(300, 128, 180, 24), new DOMRect(320, 168, 200, 24)].some((rect) =>
+    popupTouchesSelection(commandbarSafeMultiLinePosition, popupWidth, popupHeight, rect)
+  ),
+  false,
+  'safe-top popup should avoid every selected rect'
+)
+assert.ok(commandbarSafeMultiLinePosition.top >= 150, 'safe-top multi-line popup should stay below commandbar')
+
+const constrainedNonOverlapPosition = resolveSelectionPopupPosition({
+  preferredLeft: 96,
+  preferredTop: 162,
+  popupWidth: 280,
+  popupHeight: 180,
+  viewportWidth: 390,
+  viewportHeight: 420,
+  viewportSafeTop: 118,
+  selectionRect: new DOMRect(72, 126, 220, 44)
+})
+assert.equal(
+  popupOverlapsSelection(constrainedNonOverlapPosition, 280, 180, new DOMRect(72, 126, 220, 44)),
+  false,
+  'strict fallback should not cover selected text when safe top limits placement'
+)
+assert.ok(constrainedNonOverlapPosition.top >= 118, 'strict fallback should respect commandbar safe top')
+
 const cornerClampCases = [
   new DOMRect(8, 8, 96, 24),
   new DOMRect(792, 8, 96, 24),
@@ -232,9 +308,18 @@ const selectionPopupCss = globalsCss.slice(
   globalsCss.indexOf('.selection-action-header')
 )
 assert.match(selectionPopupCss, /\.selection-action-popup\s*\{[^}]*position:\s*fixed/s)
-assert.match(selectionPopupCss, /\.selection-action-popup\s*\{[^}]*z-index:\s*360/s)
+assert.match(selectionPopupCss, /\.selection-action-popup\s*\{[^}]*z-index:\s*1800/s)
+assert.match(globalsCss, /--z-selection-popup:\s*1800;/)
+assert.match(selectionPopupCss, /width:\s*min\(420px, calc\(100vw - 24px\)\)/)
 assert.doesNotMatch(selectionPopupCss, /\.selection-action-popup\s*\{[^}]*position:\s*absolute/s)
 assert.match(selectionManagerSource, /resolveSelectionPopupPosition/)
+assert.match(selectionManagerSource, /function getCommandbarSafeTop/)
+assert.match(selectionManagerSource, /\.mobile-viewer-commandbar/)
+assert.match(selectionManagerSource, /viewportSafeTop:\s*getCommandbarSafeTop\(\)/)
+assert.equal((selectionManagerSource.match(/viewportSafeTop:\s*getCommandbarSafeTop\(\)/g) ?? []).length, 2)
+assert.match(selectionManagerSource, /const safeTop = Math\.max\(rootRect\.top \+ 12, getCommandbarSafeTop\(\)\)/)
+assert.match(selectionManagerSource, /const loupeGap = 6/)
+assert.match(selectionManagerSource, /top:\s*Math\.max\(safeTop, top\)/)
 assert.match(selectionManagerSource, /resolvePdfPopupPosition/)
 assert.match(selectionManagerSource, /is-placed-\$\{popupPosition\.placement\}/)
 assert.doesNotMatch(selectionManagerSource, /position:\s*'absolute'/)
@@ -246,14 +331,24 @@ assert.match(selectionManagerSource, /SelectionLoupe/)
 assert.match(selectionManagerSource, /selectionRects:\s*popup\.selectionClientRects/)
 assert.match(documentViewerSource, /SourceSelectionMagnifierLens/)
 assert.match(documentViewerSource, /updateReadableSelectionMagnifier/)
+assert.match(documentViewerSource, /function getCommandbarSafeTop/)
+assert.match(documentViewerSource, /\.mobile-viewer-commandbar/)
+assert.match(documentViewerSource, /viewportSafeTop:\s*getCommandbarSafeTop\(\)/)
+assert.match(documentViewerSource, /const safeTop = Math\.max\(rootRect\.top \+ 12, getCommandbarSafeTop\(\)\)/)
+assert.doesNotMatch(documentViewerSource, /const safeTop = Math\.max\(rootRect\.top \+ 12, 76\)/)
+assert.match(documentViewerSource, /const loupeGap = 6/)
+assert.match(documentViewerSource, /Math\.max\(15, Math\.min\(24, tallestSelectionLine \* 1\.05\)\)/)
 assert.match(documentViewerSource, /document\.addEventListener\('selectionchange'/)
 assert.match(globalsCss, /\.document-selection-loupe\s*\{[^}]*position:\s*fixed[^}]*pointer-events:\s*none/s)
+assert.match(globalsCss, /\.document-selection-loupe\s*\{[^}]*min-width:\s*136px/s)
 assert.match(globalsCss, /\.document-selection-loupe-copy\s*\{[^}]*-webkit-line-clamp:\s*2/s)
 
-const pdfPageMapStart = documentViewerSource.indexOf('pdfState.pages.map')
+const pdfPageMapStart = documentViewerSource.indexOf('Array.from({ length: pdfState.pageCount }')
 assert.notEqual(pdfPageMapStart, -1)
 const pdfPageMapEnd = documentViewerSource.indexOf('</div>', pdfPageMapStart)
 const pdfPageMarkup = documentViewerSource.slice(pdfPageMapStart, pdfPageMapEnd)
+assert.match(pdfPageMarkup, /<PdfCanvasPage[^>]*document=\{pdfState\.document\}/)
+assert.match(pdfPageMarkup, /<PdfCanvasPage[^>]*rootRef=\{sourcePaneRef\}/)
 const expectedLayerOrder = [
   '<PdfCanvasPage',
   '<SelectedTextHighlightLayer',
@@ -339,6 +434,14 @@ assert.match(documentViewerSource, /\.mobile-pdf-page-layer/)
 assert.match(documentViewerSource, /\.mobile-readable-web-document/)
 assert.match(documentViewerSource, /const draftPathRef = useRef<DraftPath \| null>\(null\)/)
 assert.match(documentViewerSource, /function commitInkDraft\(\)\s*\{\s*const currentDraftPath = draftPathRef\.current/s)
+assert.match(documentViewerSource, /smoothInkPath\(currentDraftPath\.points, currentDraftPath\.kind, toolSettings\)/)
+assert.match(documentViewerSource, /smoothInkPath\(draft\.points, draft\.kind, toolSettings\)/)
+assert.match(documentViewerSource, /getCoalescedPointerEvents\(event\.nativeEvent\)\.forEach/)
+assert.match(documentViewerSource, /pointerEvent\.clientX/)
+assert.match(documentViewerSource, /pointerEvent\.clientY/)
+assert.match(documentViewerSource, /route\.kind !== draft\.surface/)
+assert.match(documentViewerSource, /getPredictedInkPoint\(draft\.screenPoints\)/)
+assert.match(documentViewerSource, /const previewPoints = predicted \? \[\.\.\.draft\.screenPoints, predicted\] : draft\.screenPoints/)
 assert.match(documentViewerSource, /draftPathRef\.current = resolved/)
 
 const sourceInkToolbarSource = documentViewerSource.slice(
@@ -398,20 +501,53 @@ assert.match(documentViewerSource, /sourcePaneRef\.current\?\.scrollBy/)
 assert.match(documentViewerSource, /workspace\.scrollWheelBehavior/)
 assert.match(documentViewerSource, /workspaceViewport:\s*\{[\s\S]*panX:[\s\S]*panY:/)
 assert.match(documentViewerSource, /routeGlobalInkPoint/)
+assert.match(documentViewerSource, /function routeSourcePaneFreeInkPoint/)
+assert.match(documentViewerSource, /activeSurface\?: 'workspace' \| 'source' \| 'source-pane'/)
+assert.match(documentViewerSource, /toolMode === 'pen' \|\| toolMode === 'pencil' \|\| toolMode === 'freeform-highlight' \|\| toolMode === 'eraser'/)
+assert.match(documentViewerSource, /routeSourcePaneFreeInkPoint\(clientX, clientY\) \?\? routeWorkspaceInkPoint\(clientX, clientY\)/)
+assert.match(documentViewerSource, /function findSourceInkPageAtPoint/)
+assert.match(documentViewerSource, /function findSourceInkPageByNumber/)
+assert.match(documentViewerSource, /activeSourcePageNumber\?: number/)
+assert.match(documentViewerSource, /sourcePane\.querySelectorAll<HTMLElement>\('\.mobile-annotated-page'\)/)
+assert.match(documentViewerSource, /findSourceInkPageByNumber\(sourcePane, activePageNumber\) \?\?/)
+assert.match(documentViewerSource, /findSourceInkPageAtPoint\(sourcePane, clientX, clientY\) \?\?/)
+assert.match(documentViewerSource, /findSourceInkPageFromElementStack\(clientX, clientY\)/)
 assert.match(documentViewerSource, /kind: 'source-pane'/)
+assert.match(globalInkCaptureSource, /activeGlobalInkSurfaceRef = useRef<'workspace' \| 'source' \| 'source-pane' \| null>/)
+assert.match(globalInkCaptureSource, /route\.kind === 'source-pane' \? 'source-pane' : 'source'/)
 assert.match(documentViewerSource, /function SourcePaneInkLayer/)
+assert.match(documentViewerSource, /<SourcePaneInkLayer[^>]*rootRef=\{sourcePaneRef\}/)
+assert.match(documentViewerSource, /function convertSourcePaneInkToPageInk/)
+assert.match(documentViewerSource, /sourcePane\.scrollWidth/)
+assert.match(documentViewerSource, /sourcePane\.scrollHeight/)
+assert.match(documentViewerSource, /clientX - sourceRect\.left \+ sourcePane\.scrollLeft/)
+assert.match(documentViewerSource, /clientY - sourceRect\.top \+ sourcePane\.scrollTop/)
+assert.match(documentViewerSource, /const surface = draft\.surface/)
+assert.match(documentViewerSource, /drawLiveGlobalInkDraft/)
+assert.match(documentViewerSource, /drawInkCurve\(context, points, \{ width, height \}\)/)
+assert.match(documentViewerSource, /canvas\.style\.left = '0px'/)
+assert.match(documentViewerSource, /canvas\.style\.top = '0px'/)
+assert.doesNotMatch(documentViewerSource, /sourcePane\.addEventListener\('scroll', handleScroll/)
 assert.match(documentViewerSource, /data-source-pane-ink-canvas="true"/)
 assert.match(documentViewerSource, /ERASE_SURFACE_INK_AT_POINT/)
+assert.match(documentViewerSource, /const sourceRoute = route\.kind === 'source-pane' \? routeSourceInkPoint\(clientX, clientY\) : null/)
+assert.match(documentViewerSource, /const afterPageErase = sourceRoute\?\.kind === 'source'/)
+assert.match(documentViewerSource, /type:\s*'ERASE_AT_POINT'/)
 assert.match(documentViewerSource, /canvasSize: \{ width: sourceBounds\.width, height: sourceBounds\.height \}/)
 assert.match(documentViewerSource, /canvasSize: \{ width: sourceRect\.width, height: sourceRect\.height \}/)
 assert.match(documentViewerSource, /toolSettings\.eraser\.size \/ \(appZoom \* Math\.max\(viewerState\.workspaceZoom, 0\.3\)\)/)
 assert.match(documentViewerSource, /canvasSize: route\.kind === 'source-pane' \? route\.canvasSize : undefined/)
 assert.match(documentViewerSource, /ref=\{viewerBodyRef\}/)
-assert.match(documentViewerSource, /className="mobile-viewer-zoom-frame" style=\{\{ overflowX: 'hidden', overflowY: 'auto' \}\}/)
-assert.match(documentViewerSource, /maxWidth:\s*'100%'/)
-assert.match(documentViewerSource, /transformOrigin:\s*'top left'/)
+assert.match(documentViewerSource, /className="mobile-viewer-zoom-frame"/)
+assert.match(documentViewerSource, /overflow:\s*'hidden'/)
+assert.match(documentViewerSource, /background:\s*'var\(--mobile-bg, #eef5fb\)'/)
+assert.match(documentViewerSource, /maxWidth:\s*'none'/)
+assert.match(documentViewerSource, /transformOrigin:\s*'left top'/)
+assert.match(documentViewerSource, /backfaceVisibility:\s*'hidden'/)
 assert.match(globalsCss, /\.mobile-source-ink-canvas\s*\{[^}]*pointer-events:\s*none/s)
-assert.match(globalsCss, /\.mobile-viewer-zoom-frame\s*\{[^}]*overflow-x:\s*hidden !important[^}]*overflow-y:\s*auto !important/s)
+assert.match(globalsCss, /\.mobile-source-pane-ink-canvas\s*\{[^}]*top:\s*0;[^}]*left:\s*0;/s)
+assert.doesNotMatch(globalsCss, /\.mobile-source-pane-ink-canvas\s*\{[^}]*inset:\s*0/s)
+assert.match(globalsCss, /\.mobile-viewer-zoom-frame\s*\{[^}]*overflow:\s*hidden !important/s)
 assert.match(globalsCss, /\.mobile-viewer\s*\{[^}]*max-width:\s*100%[^}]*box-sizing:\s*border-box[^}]*overflow-x:\s*hidden/s)
 assert.match(globalsCss, /\.mobile-pdf-pane,\s*\.mobile-workspace-pane\s*\{[^}]*overflow-x:\s*hidden[^}]*overflow-y:\s*auto/s)
 assert.match(globalsCss, /\.mobile-annotated-page\s*\{[^}]*max-width:\s*100%[^}]*overflow-x:\s*hidden/s)
@@ -602,8 +738,8 @@ const pageEditPanelSource = documentViewerSource.slice(
   documentViewerSource.indexOf('function SelectionActionPopup')
 )
 assert.match(documentViewerSource, /<Modal title="Edit Pages" className="page-editor-modal-shell"/)
-assert.match(documentViewerSource, /<PageEditPanel\s*pages=\{pdfState\.pages\}/)
-assert.match(pageEditPanelSource, /pages\?: PDFPageProxy\[\]/)
+assert.match(documentViewerSource, /<PageEditPanel\s*pdfDocument=\{pdfState\.document\}/)
+assert.match(pageEditPanelSource, /pdfDocument: PDFDocumentProxy/)
 assert.match(pageEditPanelSource, /<PageEditorThumbnail/)
 assert.doesNotMatch(pageEditPanelSource, /<PdfCanvasPage/)
 assert.match(documentViewerSource, /isExpectedPdfCancellation/)
@@ -620,9 +756,9 @@ assert.match(pageEditPanelSource, /Apply to All Pages/)
 assert.match(pageEditPanelSource, /tab\.key === 'insert'/)
 assert.match(pageEditPanelSource, /onInsertPage\(selectedPage\)/)
 assert.match(pageEditPanelSource, /tab\.key === 'delete'/)
-assert.match(pageEditPanelSource, /onDeletePage\(selectedPage\)/)
+assert.match(pageEditPanelSource, /runForSelectedPages\(onDeletePage\)/)
 assert.match(pageEditPanelSource, /tab\.key === 'edit'/)
-assert.match(pageEditPanelSource, /onExtractPage\(selectedPage\)/)
+assert.match(pageEditPanelSource, /runForSelectedPages\(onExtractPage\)/)
 assert.doesNotMatch(pageEditPanelSource, /Insert Blank Page After/)
 assert.doesNotMatch(pageEditPanelSource, /Delete Page \{selectedPage\}/)
 assert.doesNotMatch(pageEditPanelSource, /Extract Page \{selectedPage\}/)

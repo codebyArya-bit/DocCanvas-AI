@@ -9,6 +9,7 @@ import type {
   WorkspacePatchOperation
 } from './mobile-store'
 import type { Bookmark, CanvasEdge, CanvasNode, Excerpt, PageAnchor } from '@workspace/domain'
+import { hitTestStroke } from './mobile-ink'
 
 const HIT_RADIUS = 0.025
 const HISTORY_LIMIT = 100
@@ -305,10 +306,18 @@ export function hitTest(
   if (textbox) return { kind: 'sourceTextboxes' as const, id: textbox.id, value: textbox }
 
   const radius = Math.max(HIT_RADIUS, eraserSize / 600)
-  const ink = [...elements.inkStrokes].reverse().find((entry) => canvasSize ? pathNearPointInPixels(entry.points, point, eraserSize, canvasSize) : pathNearPoint(entry.points, point, radius))
+  const ink = [...elements.inkStrokes].reverse().find((entry) =>
+    canvasSize
+      ? hitTestStroke(entry.points, point, eraserSize + (entry.size ?? 1) / 2, canvasSize)
+      : hitTestStroke(entry.points, point, radius + ((entry.size ?? 1) / 2) / 600)
+  )
   if (ink) return { kind: 'inkStrokes' as const, id: ink.id, value: ink }
 
-  const highlight = [...elements.freeformHighlights].reverse().find((entry) => canvasSize ? pathNearPointInPixels(entry.points, point, eraserSize, canvasSize) : pathNearPoint(entry.points, point, radius))
+  const highlight = [...elements.freeformHighlights].reverse().find((entry) =>
+    canvasSize
+      ? hitTestStroke(entry.points, point, eraserSize + (entry.size ?? 1) / 2, canvasSize)
+      : hitTestStroke(entry.points, point, radius + ((entry.size ?? 1) / 2) / 600)
+  )
   if (highlight) return { kind: 'freeformHighlights' as const, id: highlight.id, value: highlight }
 
   const bookmark = [...(elements.bookmarks ?? [])].reverse().find((entry) => {
@@ -477,11 +486,10 @@ function hitTestWorkspaceInk(
   },
   eraserSize = 24
 ) {
-  const radius = Math.max(8, eraserSize)
-  const ink = [...elements.inkStrokes].reverse().find((entry) => pathNearPoint(entry.points, point, radius))
+  const ink = [...elements.inkStrokes].reverse().find((entry) => hitTestStroke(entry.points, point, Math.max(8, eraserSize + (entry.size ?? 1) / 2)))
   if (ink) return { kind: 'inkStrokes' as const, id: ink.id, value: ink }
 
-  const highlight = [...elements.freeformHighlights].reverse().find((entry) => pathNearPoint(entry.points, point, radius))
+  const highlight = [...elements.freeformHighlights].reverse().find((entry) => hitTestStroke(entry.points, point, Math.max(8, eraserSize + (entry.size ?? 1) / 2)))
   if (highlight) return { kind: 'freeformHighlights' as const, id: highlight.id, value: highlight }
 
   return null
@@ -497,10 +505,18 @@ function hitTestSurfaceInk(
   canvasSize?: InkCanvasSize
 ) {
   const radius = Math.max(0.02, eraserSize / 600)
-  const ink = [...elements.inkStrokes].reverse().find((entry) => canvasSize ? pathNearPointInPixels(entry.points, point, eraserSize, canvasSize) : pathNearPoint(entry.points, point, radius))
+  const ink = [...elements.inkStrokes].reverse().find((entry) =>
+    canvasSize
+      ? hitTestStroke(entry.points, point, eraserSize + (entry.size ?? 1) / 2, canvasSize)
+      : hitTestStroke(entry.points, point, radius + ((entry.size ?? 1) / 2) / 600)
+  )
   if (ink) return { kind: 'inkStrokes' as const, id: ink.id, value: ink }
 
-  const highlight = [...elements.freeformHighlights].reverse().find((entry) => canvasSize ? pathNearPointInPixels(entry.points, point, eraserSize, canvasSize) : pathNearPoint(entry.points, point, radius))
+  const highlight = [...elements.freeformHighlights].reverse().find((entry) =>
+    canvasSize
+      ? hitTestStroke(entry.points, point, eraserSize + (entry.size ?? 1) / 2, canvasSize)
+      : hitTestStroke(entry.points, point, radius + ((entry.size ?? 1) / 2) / 600)
+  )
   if (highlight) return { kind: 'freeformHighlights' as const, id: highlight.id, value: highlight }
 
   return null
@@ -513,44 +529,6 @@ function anchorContainsPoint(anchor: PageAnchor, point: NormalizedPoint) {
   const width = anchor.boundingBox.width / scale
   const height = anchor.boundingBox.height / scale
   return point.x >= x && point.x <= x + width && point.y >= y && point.y <= y + height
-}
-
-function pathNearPoint(points: NormalizedPoint[], target: NormalizedPoint, radius = HIT_RADIUS) {
-  if (points.some((point) => distance(point, target) <= radius)) return true
-
-  for (let index = 1; index < points.length; index += 1) {
-    if (distanceToSegment(target, points[index - 1], points[index]) <= radius) return true
-  }
-
-  return false
-}
-
-function pathNearPointInPixels(points: NormalizedPoint[], target: NormalizedPoint, radiusPx: number, canvasSize: InkCanvasSize) {
-  const pixelTarget = toPixelPoint(target, canvasSize)
-  return pathNearPoint(points.map((point) => toPixelPoint(point, canvasSize)), pixelTarget, Math.max(1, radiusPx))
-}
-
-function toPixelPoint(point: NormalizedPoint, canvasSize: InkCanvasSize): NormalizedPoint {
-  return {
-    x: point.x * Math.max(1, canvasSize.width),
-    y: point.y * Math.max(1, canvasSize.height)
-  }
-}
-
-function distanceToSegment(point: NormalizedPoint, start: NormalizedPoint, end: NormalizedPoint) {
-  const dx = end.x - start.x
-  const dy = end.y - start.y
-  if (dx === 0 && dy === 0) return distance(point, start)
-
-  const t = Math.max(
-    0,
-    Math.min(1, ((point.x - start.x) * dx + (point.y - start.y) * dy) / (dx * dx + dy * dy))
-  )
-
-  return distance(point, {
-    x: start.x + t * dx,
-    y: start.y + t * dy
-  })
 }
 
 function perpendicularDistance(point: NormalizedPoint, lineStart: NormalizedPoint, lineEnd: NormalizedPoint) {

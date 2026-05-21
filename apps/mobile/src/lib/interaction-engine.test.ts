@@ -147,6 +147,16 @@ state = dispatchInteractionAction(workspace({
   payload: { documentId: 'doc-1', pageNumber: 1, point: { x: 0.5, y: 0.112 }, size: 12, canvasSize: { width: 1000, height: 1000 } }
 })
 assert.equal(state.inkStrokes?.length, 0)
+
+state = dispatchInteractionAction(workspace({
+  inkStrokes: [
+    { ...stroke, id: 'source-pixel-stroke-width-erase', size: 20, points: [{ x: 0.1, y: 0.1 }, { x: 0.9, y: 0.1 }] }
+  ]
+}), {
+  type: 'ERASE_AT_POINT',
+  payload: { documentId: 'doc-1', pageNumber: 1, point: { x: 0.5, y: 0.118 }, size: 8, canvasSize: { width: 1000, height: 1000 } }
+})
+assert.equal(state.inkStrokes?.length, 0)
 state = dispatchInteractionAction(workspace({
   freeformHighlights: [{ ...highlight, id: 'workspace-highlight-erase', pageNumber: undefined, surface: 'workspace', points: [{ x: 200, y: 200 }, { x: 250, y: 250 }] }],
   inkStrokes: [
@@ -183,6 +193,16 @@ state = dispatchInteractionAction(workspace({
 assert.equal(state.inkStrokes?.length, 0)
 
 state = dispatchInteractionAction(workspace({
+  inkStrokes: [
+    { ...stroke, id: 'workspace-stroke-size-radius-erase', size: 20, pageNumber: undefined, surface: 'workspace', points: [{ x: 0, y: 0 }, { x: 100, y: 0 }] }
+  ]
+}), {
+  type: 'ERASE_SURFACE_INK_AT_POINT',
+  payload: { documentId: 'doc-1', surface: 'workspace', point: { x: 50, y: 12 }, size: 4 }
+})
+assert.equal(state.inkStrokes?.length, 0)
+
+state = dispatchInteractionAction(workspace({
   freeformHighlights: [{ ...highlight, id: 'source-pane-highlight-erase', pageNumber: undefined, surface: 'source-pane', points: [{ x: 0.2, y: 0.2 }, { x: 0.25, y: 0.25 }] }],
   inkStrokes: [
     { ...stroke, id: 'source-page-safe', pageNumber: 1, surface: 'source', points: [{ x: 0.2, y: 0.2 }, { x: 0.25, y: 0.25 }] },
@@ -196,6 +216,16 @@ assert.deepEqual(state.inkStrokes?.map((entry) => entry.id), ['source-page-safe'
 assert.equal(state.freeformHighlights?.length, 1)
 state = dispatchInteractionAction(state, { type: 'UNDO' })
 assert.equal(state.inkStrokes?.length, 2)
+
+state = dispatchInteractionAction(workspace({
+  inkStrokes: [
+    { ...stroke, id: 'source-pane-stroke-size-radius-erase', size: 20, pageNumber: undefined, surface: 'source-pane', points: [{ x: 0.45, y: 0.45 }, { x: 0.5, y: 0.45 }] }
+  ]
+}), {
+  type: 'ERASE_SURFACE_INK_AT_POINT',
+  payload: { documentId: 'doc-1', surface: 'source-pane', point: { x: 0.47, y: 0.468 }, size: 8, canvasSize: { width: 1000, height: 1000 } }
+})
+assert.equal(state.inkStrokes?.length, 0)
 
 const anchor: PageAnchor = {
   id: 'anchor-1',

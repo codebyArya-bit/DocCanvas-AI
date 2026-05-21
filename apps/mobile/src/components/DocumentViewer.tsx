@@ -13,9 +13,9 @@ import { MobileWorkspaceCanvas } from './MobileWorkspaceCanvas'
 import { SharedTextboxToolbar } from './SharedTextboxToolbar'
 import {
   dispatchInteractionAction,
-  normalizePointer,
-  simplifyPath
+  normalizePointer
 } from '../lib/interaction-engine'
+import { drawInkCurve, getCoalescedPointerEvents, getPredictedInkPoint, smoothInkPath } from '../lib/mobile-ink'
 import {
   getDocumentSourceKind,
   getDocumentViewerState,
@@ -122,7 +122,7 @@ const DEBUG_PDF_SELECTION = process.env.NEXT_PUBLIC_DEBUG_PDF_SELECTION === '1'
 
 type PdfState = {
   document: PDFDocumentProxy
-  pages: PDFPageProxy[]
+  pageCount: number
   task: PdfLoadingTaskLike
 }
 
@@ -143,6 +143,7 @@ type GlobalInkDraft = {
   pageNumber?: number
   points: NormalizedPoint[]
   screenPoints: NormalizedPoint[]
+  canvasSize?: { width: number; height: number }
 }
 
 const ZOOM_STEP = 0.1
@@ -188,6 +189,7 @@ export function DocumentViewer({ docId }: { docId: string }) {
   const [navigateScope, setNavigateScope] = useState<'current-doc' | 'all-docs'>('current-doc')
   const [viewportSize, setViewportSize] = useState({ width: 1280, height: 800 })
   const [sourcePaneWidth, setSourcePaneWidth] = useState(0)
+  const [basePdfPageWidth, setBasePdfPageWidth] = useState(0)
   const [sourceScrollVersion, setSourceScrollVersion] = useState(0)
   const [documentFilter, setDocumentFilter] = useState('')
   const [highlightFilter, setHighlightFilter] = useState('')
@@ -244,10 +246,6 @@ export function DocumentViewer({ docId }: { docId: string }) {
     if (viewportSize.width < 1024 || viewportSize.height < 600) return 'compact'
     return 'desktop'
   }, [viewportSize.height, viewportSize.width])
-  const basePdfPageWidth = useMemo(() => {
-    const firstPage = pdfState?.pages[0]
-    return firstPage ? firstPage.getViewport({ scale: 1.25 }).width : 0
-  }, [pdfState])
   const sourceFitScale = useMemo(() => {
     if (!basePdfPageWidth || !sourcePaneWidth) return 1
     const availableWidth = Math.max(120, sourcePaneWidth - SOURCE_PANE_HORIZONTAL_PADDING)
@@ -258,6 +256,32 @@ export function DocumentViewer({ docId }: { docId: string }) {
     return Math.min(1, maxFitScale)
   }, [basePdfPageWidth, sourcePaneWidth, viewerState.sourceZoom])
   const effectiveSourceZoom = viewerState.sourceZoom * sourceFitScale
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function measureFirstPage() {
+      if (!pdfState?.document || pdfState.pageCount < 1) {
+        setBasePdfPageWidth(0)
+        return
+      }
+
+      try {
+        const firstPage = await pdfState.document.getPage(1)
+        if (cancelled) return
+        setBasePdfPageWidth(firstPage.getViewport({ scale: 1.25 }).width)
+      } catch (error) {
+        if (!cancelled && !isExpectedPdfCancellation(error)) {
+          console.error('Failed to measure first PDF page:', error)
+        }
+      }
+    }
+
+    void measureFirstPage()
+    return () => {
+      cancelled = true
+    }
+  }, [pdfState?.document, pdfState?.pageCount])
   const currentDocumentMarks = useMemo(() => {
     if (!workspace || !record) return []
     return workspace.anchors
@@ -356,10 +380,7 @@ export function DocumentViewer({ docId }: { docId: string }) {
         const kind = getDocumentSourceKind(loadedRecord)
         if ((kind === 'pdf' || kind === 'web-visual') && loadedRecord.bytes) {
           const opened = await openPdfDocument(loadedRecord.bytes)
-          const pages = await Promise.all(
-            Array.from({ length: opened.document.numPages }, (_, index) => opened.document.getPage(index + 1))
-          )
-          nextPdfState = { document: opened.document, pages, task: opened.task }
+          nextPdfState = { document: opened.document, pageCount: opened.document.numPages, task: opened.task }
           if (cancelled || activeDocIdRef.current !== docId) {
             await destroyPdfTask(opened.task)
             return
@@ -848,7 +869,7 @@ export function DocumentViewer({ docId }: { docId: string }) {
       updateDraftPath(null)
       return
     }
-    const points = currentDraftPath.kind === 'freeform-highlight' && toolSettings.highlight.smoothed ? simplifyPath(currentDraftPath.points) : currentDraftPath.points
+    const points = smoothInkPath(currentDraftPath.points, currentDraftPath.kind, toolSettings)
     if (points.length < 2) {
       updateDraftPath(null)
       activeToolPageRef.current = null
@@ -900,7 +921,8 @@ export function DocumentViewer({ docId }: { docId: string }) {
   function routeGlobalInkPoint(
     clientX: number,
     clientY: number,
-    activeSurface?: 'workspace' | 'source'
+    activeSurface?: 'workspace' | 'source' | 'source-pane',
+    activeSourcePageNumber?: number
   ): GlobalInkSurface | null {
     if (!record || !workspace) return null
 
@@ -908,8 +930,16 @@ export function DocumentViewer({ docId }: { docId: string }) {
       return routeWorkspaceInkPoint(clientX, clientY)
     }
 
+    if (activeSurface === 'source-pane') {
+      return routeSourcePaneFreeInkPoint(clientX, clientY)
+    }
+
     if (activeSurface === 'source') {
-      return routeSourceInkPoint(clientX, clientY)
+      return routeSourceInkPoint(clientX, clientY, activeSourcePageNumber)
+    }
+
+    if (toolMode === 'pen' || toolMode === 'pencil' || toolMode === 'freeform-highlight' || toolMode === 'eraser') {
+      return routeSourcePaneFreeInkPoint(clientX, clientY) ?? routeWorkspaceInkPoint(clientX, clientY)
     }
 
     return routeSourceInkPoint(clientX, clientY) ?? routeWorkspaceInkPoint(clientX, clientY)
@@ -941,14 +971,12 @@ export function DocumentViewer({ docId }: { docId: string }) {
     }
   }
 
-  function routeSourceInkPoint(clientX: number, clientY: number): GlobalInkSurface | null {
-    const elements = document.elementsFromPoint(clientX, clientY)
-
-    const pageElement = elements.find(
-      (element) =>
-        element instanceof HTMLElement &&
-        element.classList.contains('mobile-annotated-page')
-    ) as HTMLElement | undefined
+  function routeSourceInkPoint(clientX: number, clientY: number, activePageNumber?: number): GlobalInkSurface | null {
+    const sourcePane = sourcePaneRef.current
+    const pageElement =
+      findSourceInkPageByNumber(sourcePane, activePageNumber) ??
+      findSourceInkPageAtPoint(sourcePane, clientX, clientY) ??
+      findSourceInkPageFromElementStack(clientX, clientY)
 
     if (pageElement) {
       const sourceBounds = getSourcePageInkBounds(pageElement)
@@ -961,7 +989,6 @@ export function DocumentViewer({ docId }: { docId: string }) {
       }
     }
 
-    const sourcePane = sourcePaneRef.current
     const sourceRect = sourcePane?.getBoundingClientRect()
 
     if (
@@ -984,6 +1011,59 @@ export function DocumentViewer({ docId }: { docId: string }) {
     return null
   }
 
+  function routeSourcePaneFreeInkPoint(clientX: number, clientY: number): GlobalInkSurface | null {
+    const sourcePane = sourcePaneRef.current
+    const sourceRect = sourcePane?.getBoundingClientRect()
+
+    if (!sourcePane || !sourceRect) return null
+
+    if (
+      clientX < sourceRect.left ||
+      clientX > sourceRect.right ||
+      clientY < sourceRect.top ||
+      clientY > sourceRect.bottom
+    ) {
+      return null
+    }
+
+    const canvasSize = {
+      width: Math.max(1, sourcePane.scrollWidth),
+      height: Math.max(1, sourcePane.scrollHeight)
+    }
+
+    return {
+      kind: 'source-pane',
+      point: {
+        x: Math.max(0, Math.min(1, (clientX - sourceRect.left + sourcePane.scrollLeft) / canvasSize.width)),
+        y: Math.max(0, Math.min(1, (clientY - sourceRect.top + sourcePane.scrollTop) / canvasSize.height))
+      },
+      canvasSize
+    }
+  }
+
+  function findSourceInkPageAtPoint(sourcePane: HTMLElement | null, clientX: number, clientY: number) {
+    if (!sourcePane) return null
+    const pageElements = Array.from(sourcePane.querySelectorAll<HTMLElement>('.mobile-annotated-page'))
+    return pageElements.find((pageElement) => {
+      const rect = getSourcePageInkBounds(pageElement)
+      return rect.width > 1 && rect.height > 1 && clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom
+    }) ?? null
+  }
+
+  function findSourceInkPageByNumber(sourcePane: HTMLElement | null, pageNumber?: number) {
+    if (!sourcePane || pageNumber == null) return null
+    return sourcePane.querySelector<HTMLElement>(`.mobile-annotated-page[data-page-number="${pageNumber}"]`)
+  }
+
+  function findSourceInkPageFromElementStack(clientX: number, clientY: number) {
+    const elements = document.elementsFromPoint(clientX, clientY)
+    return elements.find(
+      (element) =>
+        element instanceof HTMLElement &&
+        element.classList.contains('mobile-annotated-page')
+    ) as HTMLElement | undefined ?? null
+  }
+
   function eraseGlobalInkAt(route: GlobalInkSurface, clientX: number, clientY: number) {
     if (!record || !toolSettings) return
     if (route.kind === 'source') {
@@ -991,8 +1071,22 @@ export function DocumentViewer({ docId }: { docId: string }) {
       return
     }
     const appZoom = Math.max(viewerState.viewerZoom || 1, 0.1)
-    updateWorkspace((current) =>
-      dispatchInteractionAction(current, {
+    updateWorkspace((current) => {
+      const sourceRoute = route.kind === 'source-pane' ? routeSourceInkPoint(clientX, clientY) : null
+      const afterPageErase = sourceRoute?.kind === 'source'
+        ? dispatchInteractionAction(current, {
+            type: 'ERASE_AT_POINT',
+            payload: {
+              documentId: record.document.id,
+              pageNumber: sourceRoute.pageNumber,
+              point: sourceRoute.point,
+              size: toolSettings.eraser.size,
+              canvasSize: sourceRoute.canvasSize
+            }
+          })
+        : current
+
+      return dispatchInteractionAction(afterPageErase, {
         type: 'ERASE_SURFACE_INK_AT_POINT',
         payload: {
           documentId: record.document.id,
@@ -1002,7 +1096,7 @@ export function DocumentViewer({ docId }: { docId: string }) {
           canvasSize: route.kind === 'source-pane' ? route.canvasSize : undefined
         }
       })
-    )
+    })
   }
 
   function scrollGlobalInkSurface(event: ReactWheelEvent<HTMLCanvasElement>) {
@@ -1047,15 +1141,19 @@ export function DocumentViewer({ docId }: { docId: string }) {
 
   function commitGlobalInkDraft(draft: GlobalInkDraft) {
     if (!record || !toolSettings || draft.points.length < 2) return
-    const points = draft.kind === 'freeform-highlight' && toolSettings.highlight.smoothed ? simplifyPath(draft.points) : draft.points
+    const points = smoothInkPath(draft.points, draft.kind, toolSettings)
     if (points.length < 2) return
+
+    // Always use the stored surface and page number – never convert source-pane to source
+    const surface = draft.surface
+    const pageNumber = draft.pageNumber
 
     if (draft.kind === 'freeform-highlight') {
       const payload: FreeformHighlight = {
         id: crypto.randomUUID(),
         documentId: record.document.id,
-        surface: draft.surface,
-        pageNumber: draft.surface === 'source' ? draft.pageNumber : undefined,
+        surface,
+        pageNumber,
         points,
         color: toolSettings.highlight.color,
         size: toolSettings.highlight.size,
@@ -1070,8 +1168,8 @@ export function DocumentViewer({ docId }: { docId: string }) {
     const payload: InkStroke = {
       id: crypto.randomUUID(),
       documentId: record.document.id,
-      surface: draft.surface,
-      pageNumber: draft.surface === 'source' ? draft.pageNumber : undefined,
+      surface,
+      pageNumber,
       tool: isPencil ? 'pencil' : 'pen',
       points,
       color: isPencil ? toolSettings.pencil.color : toolSettings.pen.color,
@@ -1079,6 +1177,45 @@ export function DocumentViewer({ docId }: { docId: string }) {
       opacity: isPencil ? toolSettings.pencil.opacity : undefined
     }
     updateWorkspace((current) => dispatchInteractionAction(current, { type: 'ADD_INK_STROKE', payload }))
+  }
+
+  function convertSourcePaneInkToPageInk(points: NormalizedPoint[], canvasSize?: { width: number; height: number }) {
+    const sourcePane = sourcePaneRef.current
+    const sourceRect = sourcePane?.getBoundingClientRect()
+    if (!sourcePane || !sourceRect || !canvasSize) return null
+
+    const pageElements = Array.from(sourcePane.querySelectorAll<HTMLElement>('.mobile-annotated-page'))
+    const pixelPoints = points.map((point) => ({
+      x: point.x * Math.max(1, canvasSize.width),
+      y: point.y * Math.max(1, canvasSize.height)
+    }))
+
+    for (const pageElement of pageElements) {
+      const bounds = getSourcePageInkBounds(pageElement)
+      const pageLeft = bounds.left - sourceRect.left + sourcePane.scrollLeft
+      const pageTop = bounds.top - sourceRect.top + sourcePane.scrollTop
+      const pageWidth = Math.max(1, bounds.width)
+      const pageHeight = Math.max(1, bounds.height)
+      const isInsidePage = pixelPoints.every(
+        (point) =>
+          point.x >= pageLeft &&
+          point.x <= pageLeft + pageWidth &&
+          point.y >= pageTop &&
+          point.y <= pageTop + pageHeight
+      )
+
+      if (!isInsidePage) continue
+
+      return {
+        pageNumber: Number(pageElement.dataset.pageNumber ?? 1),
+        points: pixelPoints.map((point) => ({
+          x: Math.max(0, Math.min(1, (point.x - pageLeft) / pageWidth)),
+          y: Math.max(0, Math.min(1, (point.y - pageTop) / pageHeight))
+        }))
+      }
+    }
+
+    return null
   }
 
   function handlePointerDown(event: React.PointerEvent<HTMLElement>) {
@@ -1447,16 +1584,25 @@ export function DocumentViewer({ docId }: { docId: string }) {
   }
 
   return (
-    <div className="mobile-viewer-zoom-frame" style={{ overflowX: 'hidden', overflowY: 'auto' }}>
+    <div
+      className="mobile-viewer-zoom-frame"
+      style={{
+        position: 'fixed',
+        inset: 0,
+        overflow: 'hidden',
+        background: 'var(--mobile-bg, #eef5fb)'
+      }}
+    >
     <main
       className={`mobile-viewer mobile-viewer-${layoutMode}`}
       data-layout-mode={layoutMode}
       style={{
-        width: `calc(100dvw / ${viewerState.viewerZoom})`,
-        height: `calc(100dvh / ${viewerState.viewerZoom})`,
-        maxWidth: '100%',
+        width: `calc(100% / ${viewerState.viewerZoom})`,
+        height: `calc(100% / ${viewerState.viewerZoom})`,
+        maxWidth: 'none',
         transform: `scale(${viewerState.viewerZoom})`,
-        transformOrigin: 'top left'
+        transformOrigin: 'left top',
+        backfaceVisibility: 'hidden'
       }}
     >
       <ViewerHeader title={record.document.title} subtitle={sourceKindLabel(sourceKind)} status={status} />
@@ -1632,7 +1778,7 @@ export function DocumentViewer({ docId }: { docId: string }) {
           onScroll={handleSourceScroll}
           aria-label="Source document"
         >
-          <SourcePaneInkLayer documentId={record.document.id} workspace={workspace} />
+          <SourcePaneInkLayer documentId={record.document.id} workspace={workspace} rootRef={sourcePaneRef} />
           <div className="mobile-source-zoom-controls" aria-label="Source zoom">
             <button className="mobile-tool-button" type="button" onClick={() => setSourceZoom(viewerState.sourceZoom - ZOOM_STEP)}>-</button>
             <span>{Math.round(viewerState.sourceZoom * 100)}%</span>
@@ -1656,13 +1802,13 @@ export function DocumentViewer({ docId }: { docId: string }) {
                   <SourceToolHitLayer pageNumber={1} />
                 </ReadableWebDocument>
               ) : pdfState ? (
-                pdfState.pages.map((page, index) => {
+                Array.from({ length: pdfState.pageCount }, (_, index) => {
                   const pageNumber = index + 1
                   if (pageEditDeletedPages.has(pageNumber)) return null
                   const rotation = getPageRotation(viewerState, pageNumber)
                   return (
                     <div key={pageNumber} className="mobile-annotated-page" data-page-number={pageNumber}>
-                      <PdfCanvasPage page={page} pageNumber={pageNumber} zoom={effectiveSourceZoom} rotation={rotation} />
+                      <PdfCanvasPage document={pdfState.document} pageNumber={pageNumber} zoom={effectiveSourceZoom} rotation={rotation} rootRef={sourcePaneRef} />
                       <SelectedTextHighlightLayer documentId={record.document.id} pageNumber={pageNumber} sourceZoom={effectiveSourceZoom} workspace={workspace} selectionHighlights={sourceSelectionHighlights} onAnchorPopup={openAnchorPopup} />
                       <SourceInkLayer documentId={record.document.id} pageNumber={pageNumber} workspace={workspace} draftPath={draftPath} />
                       <SourceToolHitLayer pageNumber={pageNumber} />
@@ -1901,7 +2047,7 @@ export function DocumentViewer({ docId }: { docId: string }) {
       ) : null}
 
       <footer className="mobile-viewer-footer">
-        Page {viewerState.activePage} of {Math.max(record.document.pageCount, pdfState?.pages.length ?? 1)} · {sourceKindLabel(sourceKind)}
+        Page {viewerState.activePage} of {Math.max(record.document.pageCount, pdfState?.pageCount ?? 1)} · {sourceKindLabel(sourceKind)}
       </footer>
 
       {selectionPopup ? (
@@ -1928,8 +2074,8 @@ export function DocumentViewer({ docId }: { docId: string }) {
       {panelMode === 'page-edit' && pdfState ? (
         <Modal title="Edit Pages" className="page-editor-modal-shell" onClose={() => setPanelMode(null)}>
           <PageEditPanel
-            pages={pdfState.pages}
-            pageCount={pdfState.pages.length}
+            pdfDocument={pdfState.document}
+            pageCount={pdfState.pageCount}
             currentPage={viewerState.activePage}
             deletedPages={pageEditDeletedPages}
             rotations={viewerState.pageRotations ?? {}}
@@ -1948,7 +2094,7 @@ export function DocumentViewer({ docId }: { docId: string }) {
             }}
             onRotateAll={(degrees) => {
               const pageRotations: Record<number, number> = {}
-              for (let pageNumber = 1; pageNumber <= pdfState.pages.length; pageNumber += 1) {
+              for (let pageNumber = 1; pageNumber <= pdfState.pageCount; pageNumber += 1) {
                 pageRotations[pageNumber] = (getPageRotation(viewerState, pageNumber) + degrees + 360) % 360
               }
               commitViewerState({ pageRotations })
@@ -2829,20 +2975,22 @@ function SourceInkLayer({
   )
 }
 
-function SourcePaneInkLayer({ documentId, workspace }: { documentId: string; workspace: MobileWorkspaceState }) {
+function SourcePaneInkLayer({ documentId, workspace, rootRef }: { documentId: string; workspace: MobileWorkspaceState; rootRef: RefObject<HTMLElement | null> }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const highlights = (workspace.freeformHighlights ?? []).filter((entry) => entry.surface === 'source-pane' && entry.documentId === documentId)
   const inkStrokes = (workspace.inkStrokes ?? []).filter((entry) => entry.surface === 'source-pane' && entry.documentId === documentId)
 
   useLayoutEffect(() => {
     const canvas = canvasRef.current
-    if (!canvas) return
+    const sourcePane = rootRef.current
+    if (!canvas || !sourcePane) return
 
     const draw = () => {
-      const rect = canvas.getBoundingClientRect()
-      const width = Math.max(1, rect.width)
-      const height = Math.max(1, rect.height)
+      const width = Math.max(1, sourcePane.scrollWidth)
+      const height = Math.max(1, sourcePane.scrollHeight)
       const dpr = window.devicePixelRatio || 1
+      canvas.style.left = '0px'
+      canvas.style.top = '0px'
       canvas.width = Math.round(width * dpr)
       canvas.height = Math.round(height * dpr)
       canvas.style.width = `${width}px`
@@ -2873,9 +3021,11 @@ function SourcePaneInkLayer({ documentId, workspace }: { documentId: string; wor
 
     draw()
     const observer = new ResizeObserver(draw)
-    observer.observe(canvas)
-    return () => observer.disconnect()
-  }, [highlights, inkStrokes])
+    observer.observe(sourcePane)
+    return () => {
+      observer.disconnect()
+    }
+  }, [highlights, inkStrokes, rootRef])
 
   return <canvas ref={canvasRef} className="mobile-source-pane-ink-canvas" aria-hidden="true" data-source-pane-ink-canvas="true" />
 }
@@ -2892,7 +3042,7 @@ function GlobalInkCaptureLayer({
   toolMode: ToolMode
   settings: MobileToolSettings
   bodyRef: RefObject<HTMLElement | null>
-  onRoutePoint: (clientX: number, clientY: number, activeSurface?: 'workspace' | 'source') => GlobalInkSurface | null
+  onRoutePoint: (clientX: number, clientY: number, activeSurface?: 'workspace' | 'source' | 'source-pane', activeSourcePageNumber?: number) => GlobalInkSurface | null
   onErase: (route: GlobalInkSurface, clientX: number, clientY: number) => void
   onCommit: (draft: GlobalInkDraft) => void
   onWheelScroll: (event: ReactWheelEvent<HTMLCanvasElement>) => void
@@ -2900,7 +3050,9 @@ function GlobalInkCaptureLayer({
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const draftRef = useRef<GlobalInkDraft | null>(null)
   const pointerDownRef = useRef(false)
-  const activeGlobalInkSurfaceRef = useRef<'workspace' | 'source' | null>(null)
+  const activeGlobalInkSurfaceRef = useRef<'workspace' | 'source' | 'source-pane' | null>(null)
+  const activePageNumberRef = useRef<number | undefined>(undefined)
+  const activeCanvasSizeRef = useRef<{ width: number; height: number } | undefined>(undefined)
 
   useLayoutEffect(() => {
     const canvas = canvasRef.current
@@ -2913,7 +3065,12 @@ function GlobalInkCaptureLayer({
     return () => observer.disconnect()
   }, [bodyRef])
 
-  function screenPoint(event: ReactPointerEvent<HTMLCanvasElement>): NormalizedPoint {
+  function screenPoint(event: Pick<PointerEvent, 'clientX' | 'clientY'>, canvas: HTMLCanvasElement): NormalizedPoint {
+    const rect = canvas.getBoundingClientRect()
+    return { x: event.clientX - rect.left, y: event.clientY - rect.top }
+  }
+
+  function screenPointFromReactEvent(event: ReactPointerEvent<HTMLCanvasElement>): NormalizedPoint {
     const rect = event.currentTarget.getBoundingClientRect()
     return { x: event.clientX - rect.left, y: event.clientY - rect.top }
   }
@@ -2944,55 +3101,74 @@ function GlobalInkCaptureLayer({
     )
   }
 
-  function handlePointerDown(event: ReactPointerEvent<HTMLCanvasElement>) {
-    if (isInteractiveViewerUiTarget(event.target)) {
-      return
-    }
-    const route = onRoutePoint(event.clientX, event.clientY)
-    if (!route) return
-    event.preventDefault()
-    event.stopPropagation()
-    event.currentTarget.setPointerCapture(event.pointerId)
-    pointerDownRef.current = true
-    activeGlobalInkSurfaceRef.current = route.kind === 'workspace' ? 'workspace' : 'source'
+function handlePointerDown(event: ReactPointerEvent<HTMLCanvasElement>) {
+  if (isInteractiveViewerUiTarget(event.target)) return
+  const route = onRoutePoint(event.clientX, event.clientY)
+  if (!route) return
+  event.preventDefault()
+  event.stopPropagation()
+  event.currentTarget.setPointerCapture(event.pointerId)
+  pointerDownRef.current = true
 
-    if (toolMode === 'eraser') {
-      onErase(route, event.clientX, event.clientY)
-      return
-    }
-    if (toolMode === 'pen' || toolMode === 'pencil' || toolMode === 'freeform-highlight') {
-      draftRef.current = {
-        kind: toolMode,
-        surface: route.kind,
-        pageNumber: route.kind === 'source' ? route.pageNumber : undefined,
-        points: [route.point],
-        screenPoints: [screenPoint(event)]
-      }
+  // Store the initial route for the whole stroke
+  activeGlobalInkSurfaceRef.current = route.kind === 'workspace' ? 'workspace' : route.kind === 'source-pane' ? 'source-pane' : 'source'
+  activePageNumberRef.current = route.kind === 'source' ? route.pageNumber : undefined
+  activeCanvasSizeRef.current = (route.kind === 'source' || route.kind === 'source-pane') ? route.canvasSize : undefined
+
+  if (toolMode === 'eraser') {
+    onErase(route, event.clientX, event.clientY)
+    return
+  }
+  if (toolMode === 'pen' || toolMode === 'pencil' || toolMode === 'freeform-highlight') {
+    draftRef.current = {
+      kind: toolMode,
+      surface: route.kind,
+      pageNumber: route.kind === 'source' ? route.pageNumber : undefined,
+      points: [route.point],
+      screenPoints: [screenPointFromReactEvent(event)],
+      canvasSize: (route.kind === 'source' || route.kind === 'source-pane') ? route.canvasSize : undefined
     }
   }
+}
 
   function handlePointerMove(event: ReactPointerEvent<HTMLCanvasElement>) {
     if (!pointerDownRef.current) return
-    const route = onRoutePoint(event.clientX, event.clientY, activeGlobalInkSurfaceRef.current ?? undefined)
-    if (!route) return
+
     event.preventDefault()
     event.stopPropagation()
 
     if (toolMode === 'eraser') {
-      onErase(route, event.clientX, event.clientY)
+      getCoalescedPointerEvents(event.nativeEvent).forEach((pointerEvent) => {
+        const route = onRoutePoint(
+          pointerEvent.clientX,
+          pointerEvent.clientY,
+          activeGlobalInkSurfaceRef.current ?? undefined,
+          activePageNumberRef.current
+        )
+        if (route) onErase(route, pointerEvent.clientX, pointerEvent.clientY)
+      })
       return
     }
-    const draft = draftRef.current
-    if (!draft || draft.surface !== route.kind || (draft.surface === 'source' && draft.pageNumber !== (route.kind === 'source' ? route.pageNumber : undefined))) return
 
-    const nextScreenPoint = screenPoint(event)
-    const previous = draft.screenPoints.at(-1)
-    if (previous) drawLiveGlobalInkSegment(event.currentTarget, draft.kind, [previous, nextScreenPoint], settings)
-    draftRef.current = {
-      ...draft,
-      points: [...draft.points, route.point],
-      screenPoints: [...draft.screenPoints, nextScreenPoint]
-    }
+    getCoalescedPointerEvents(event.nativeEvent).forEach((pointerEvent) => {
+      const draft = draftRef.current
+      if (!draft) return
+      const route = onRoutePoint(
+        pointerEvent.clientX,
+        pointerEvent.clientY,
+        activeGlobalInkSurfaceRef.current ?? undefined,
+        draft.pageNumber
+      )
+      if (!route || route.kind !== draft.surface) return
+      if (draft.surface === 'source' && route.kind === 'source' && route.pageNumber !== draft.pageNumber) return
+      draftRef.current = {
+        ...draft,
+        points: [...draft.points, route.point],
+        screenPoints: [...draft.screenPoints, screenPoint(pointerEvent, event.currentTarget)],
+        canvasSize: activeCanvasSizeRef.current
+      }
+    })
+    if (draftRef.current) drawLiveGlobalInkDraft(event.currentTarget, draftRef.current, settings)
   }
 
   function handlePointerUp(event: ReactPointerEvent<HTMLCanvasElement>) {
@@ -3000,6 +3176,8 @@ function GlobalInkCaptureLayer({
     event.stopPropagation()
     pointerDownRef.current = false
     activeGlobalInkSurfaceRef.current = null
+    activePageNumberRef.current = undefined
+    activeCanvasSizeRef.current = undefined
     if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId)
     }
@@ -3040,17 +3218,7 @@ function drawInkPath(
   context.lineWidth = Math.max(1.5, options.size)
   context.lineCap = 'round'
   context.lineJoin = 'round'
-
-  context.beginPath()
-  context.moveTo(points[0].x * width, points[0].y * height)
-  for (let index = 1; index < points.length - 1; index += 1) {
-    const next = points[index + 1]
-    const midpointX = ((points[index].x + next.x) / 2) * width
-    const midpointY = ((points[index].y + next.y) / 2) * height
-    context.quadraticCurveTo(points[index].x * width, points[index].y * height, midpointX, midpointY)
-  }
-  const last = points[points.length - 1]
-  context.lineTo(last.x * width, last.y * height)
+  drawInkCurve(context, points, { width, height })
   context.stroke()
   context.restore()
 }
@@ -3112,18 +3280,22 @@ function resizeGlobalInkCanvas(canvas: HTMLCanvasElement) {
   canvas.getContext('2d')?.setTransform(dpr, 0, 0, dpr, 0, 0)
 }
 
-function drawLiveGlobalInkSegment(canvas: HTMLCanvasElement, kind: DraftPath['kind'], points: NormalizedPoint[], settings: MobileToolSettings) {
+function drawLiveGlobalInkDraft(canvas: HTMLCanvasElement, draft: GlobalInkDraft, settings: MobileToolSettings) {
   const context = canvas.getContext('2d')
   if (!context) return
+  const rect = canvas.getBoundingClientRect()
+  const width = Math.max(1, rect.width)
+  const height = Math.max(1, rect.height)
+  context.clearRect(0, 0, width, height)
 
-  const options = kind === 'freeform-highlight'
+  const options = draft.kind === 'freeform-highlight'
     ? {
         color: settings.highlight.color,
         size: settings.highlight.size,
         opacity: Math.min(0.75, (settings.highlight.opacity ?? 0.42) + 0.16),
         kind: 'highlighter' as const
       }
-    : kind === 'pencil'
+    : draft.kind === 'pencil'
       ? {
           color: settings.pencil.color,
           size: settings.pencil.size,
@@ -3137,6 +3309,9 @@ function drawLiveGlobalInkSegment(canvas: HTMLCanvasElement, kind: DraftPath['ki
           kind: 'pen' as const
         }
 
+  const predicted = getPredictedInkPoint(draft.screenPoints)
+  const previewPoints = predicted ? [...draft.screenPoints, predicted] : draft.screenPoints
+  const points = smoothInkPath(previewPoints, draft.kind, settings)
   if (points.length < 2) return
   context.save()
   context.globalCompositeOperation = options.kind === 'highlighter' ? 'multiply' : 'source-over'
@@ -3145,9 +3320,7 @@ function drawLiveGlobalInkSegment(canvas: HTMLCanvasElement, kind: DraftPath['ki
   context.lineWidth = Math.max(1.5, options.size)
   context.lineCap = 'round'
   context.lineJoin = 'round'
-  context.beginPath()
-  context.moveTo(points[0].x, points[0].y)
-  context.lineTo(points[1].x, points[1].y)
+  drawInkCurve(context, points, { width: 1, height: 1 })
   context.stroke()
   context.restore()
 }
@@ -4213,11 +4386,11 @@ const PAGE_EDIT_TABS = [
 ] as const
 
 function PageEditorThumbnail({
-  page,
+  document,
   pageNumber,
   rotation = 0
 }: {
-  page: PDFPageProxy
+  document: PDFDocumentProxy
   pageNumber: number
   rotation?: number
 }) {
@@ -4228,36 +4401,47 @@ function PageEditorThumbnail({
     if (!canvas) return
 
     let cancelled = false
-    const viewport = page.getViewport({ scale: 0.22, rotation })
-    const context = canvas.getContext('2d')
-    if (!context) return
+    let task: ReturnType<PDFPageProxy['render']> | null = null
 
-    canvas.width = viewport.width
-    canvas.height = viewport.height
-    canvas.style.width = `${viewport.width}px`
-    canvas.style.height = `${viewport.height}px`
+    async function renderThumbnail() {
+      try {
+        const page = await document.getPage(pageNumber)
+        if (cancelled) return
+        const viewport = page.getViewport({ scale: 0.22, rotation })
+        const context = canvas?.getContext('2d')
+        if (!canvas || !context) return
 
-    const task = page.render({ canvas, canvasContext: context, viewport })
+        canvas.width = viewport.width
+        canvas.height = viewport.height
+        canvas.style.width = `${viewport.width}px`
+        canvas.style.height = `${viewport.height}px`
 
-    task.promise.catch((error) => {
-      if (!cancelled && !isExpectedPdfCancellation(error)) console.error(`Failed thumbnail page ${pageNumber}:`, error)
-    })
+        task = page.render({ canvas, canvasContext: context, viewport })
+        task.promise.catch((error) => {
+          if (!cancelled && !isExpectedPdfCancellation(error)) console.error(`Failed thumbnail page ${pageNumber}:`, error)
+        })
+      } catch (error) {
+        if (!cancelled && !isExpectedPdfCancellation(error)) console.error(`Failed thumbnail page ${pageNumber}:`, error)
+      }
+    }
+
+    void renderThumbnail()
 
     return () => {
       cancelled = true
       try {
-        task.cancel()
+        task?.cancel()
       } catch (error) {
         if (!isExpectedPdfCancellation(error)) console.error(`Failed to cancel thumbnail page ${pageNumber}:`, error)
       }
     }
-  }, [page, pageNumber, rotation])
+  }, [document, pageNumber, rotation])
 
   return <canvas className="page-editor-thumbnail-canvas" ref={canvasRef} />
 }
 
 function PageEditPanel({
-  pages,
+  pdfDocument,
   pageCount,
   currentPage,
   deletedPages,
@@ -4269,7 +4453,7 @@ function PageEditPanel({
   onDeletePage,
   onExtractPage
 }: {
-  pages?: PDFPageProxy[]
+  pdfDocument: PDFDocumentProxy
   pageCount: number
   currentPage: number
   deletedPages: Set<number>
@@ -4425,9 +4609,9 @@ function PageEditPanel({
                 onDoubleClick={() => onGoToPage(pageNumber)}
               >
                 <span className="page-editor-thumb">
-                  {pages?.[index] && !isDeleted ? (
+                  {!isDeleted ? (
                     <PageEditorThumbnail
-                      page={pages[index]}
+                      document={pdfDocument}
                       pageNumber={pageNumber}
                       rotation={rotations[pageNumber] ?? 0}
                     />
@@ -4873,7 +5057,8 @@ function SelectionActionPopup({
       popupHeight: popupSize.height,
       viewportWidth: window.innerWidth,
       viewportHeight: window.innerHeight,
-      selectionRect: popup.selectionRect
+      selectionRect: popup.selectionRect,
+      viewportSafeTop: getCommandbarSafeTop()
     })
     setPosition((current) =>
       Math.abs(current.left - next.left) < 0.5 && Math.abs(current.top - next.top) < 0.5
@@ -5451,6 +5636,15 @@ function buildUnionRect(rects: DOMRect[]) {
   return new DOMRect(left, top, right - left, bottom - top)
 }
 
+function getCommandbarSafeTop() {
+  if (typeof document === 'undefined') return 76
+
+  const commandbar = document.querySelector<HTMLElement>('.mobile-viewer-commandbar')
+  const bottom = commandbar?.getBoundingClientRect().bottom
+
+  return typeof bottom === 'number' && Number.isFinite(bottom) ? Math.max(76, bottom + 8) : 76
+}
+
 function updateReadableSelectionMagnifier(
   root: HTMLElement | null,
   selectionColor: string,
@@ -5490,21 +5684,23 @@ function updateReadableSelectionMagnifier(
   const selectionLeft = selectionClientRects.length ? Math.min(...selectionClientRects.map((box) => box.left)) : rect.left
   const selectionTop = selectionClientRects.length ? Math.min(...selectionClientRects.map((box) => box.top)) : rect.top
   const selectionRight = selectionClientRects.length ? Math.max(...selectionClientRects.map((box) => box.right)) : rect.right
-  const loupeWidth = Math.min(Math.max(160, root.clientWidth - 24), Math.max(180, rect.width + 52))
-  const loupeMaxWidth = Math.min(Math.max(220, root.clientWidth - 24), 360)
-  const loupeFontSize = Math.max(18, Math.min(30, tallestSelectionLine * 1.18))
-  const loupeHeightEstimate = loupeFontSize * 2.7 + 28
+  const loupeWidth = Math.min(Math.max(136, root.clientWidth - 24), Math.max(156, rect.width + 36))
+  const loupeMaxWidth = Math.min(Math.max(180, root.clientWidth - 24), 300)
+  const loupeFontSize = Math.max(15, Math.min(24, tallestSelectionLine * 1.05))
+  const loupeHeightEstimate = loupeFontSize * 2.45 + 22
+  const loupeGap = 6
+  const safeTop = Math.max(rootRect.top + 12, getCommandbarSafeTop())
   const preferredLeft = selectionLeft + (selectionRight - selectionLeft) / 2 - loupeWidth / 2
-  const preferredAboveTop = selectionTop - loupeHeightEstimate - 8
+  const preferredAboveTop = selectionTop - loupeHeightEstimate - loupeGap
   const left = Math.max(rootRect.left + 12, Math.min(rootRect.right - loupeWidth - 12, preferredLeft))
-  const top = preferredAboveTop >= rootRect.top + 12
+  const top = preferredAboveTop >= safeTop
     ? preferredAboveTop
-    : Math.min(rootRect.bottom - loupeHeightEstimate - 12, rect.bottom + 18)
+    : Math.min(rootRect.bottom - loupeHeightEstimate - 12, rect.bottom + loupeGap)
 
   setMagnifier({
     text: text.length > 160 ? `${text.slice(0, 157)}...` : text,
     left,
-    top: Math.max(12, top),
+    top: Math.max(safeTop, top),
     selectionColor,
     width: loupeWidth,
     maxWidth: loupeMaxWidth,

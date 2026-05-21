@@ -11,6 +11,7 @@ import {
 } from 'react'
 import type { CanvasEdge, CanvasNode, TextStyle } from '@workspace/domain'
 import type { FreeformHighlight, InkStroke, MobileToolSettings, MobileWorkspaceLink, MobileWorkspaceViewport, NormalizedPoint, ToolMode } from '../lib/mobile-store'
+import { drawInkCurve, getCoalescedPointerEvents, getPredictedInkPoint, smoothInkPath } from '../lib/mobile-ink'
 import { SharedTextboxToolbar } from './SharedTextboxToolbar'
 
 interface MobileWorkspaceCanvasProps {
@@ -104,6 +105,7 @@ const PRESET_OPTIONS: Array<{ label: string; value: NonNullable<TextStyle['prese
 ]
 const MIN_WORKSPACE_ZOOM = 0.3
 const MAX_WORKSPACE_ZOOM = 3
+const WORKSPACE_VIEWPORT_PADDING = 16
 const WORKSPACE_CANVAS_SURFACE_WIDTH = 12000
 const WORKSPACE_CANVAS_SURFACE_HEIGHT = 9000
 const WORKSPACE_INK_TOOL_MODES = new Set<ToolMode>(['pen', 'pencil', 'freeform-highlight', 'eraser'])
@@ -308,6 +310,31 @@ export function MobileWorkspaceCanvas({
     }
   }
 
+  function clampWorkspaceViewport(
+    nextViewport: MobileWorkspaceViewport & { workspaceZoom: number }
+  ): MobileWorkspaceViewport & { workspaceZoom: number } {
+    const rect = surfaceRef.current?.getBoundingClientRect()
+    if (!rect) return nextViewport
+
+    const scale = Math.max(appZoom || 1, 0.1)
+    const viewportWidth = rect.width / scale
+    const viewportHeight = rect.height / scale
+    const workspaceZoom = Math.max(MIN_WORKSPACE_ZOOM, Math.min(MAX_WORKSPACE_ZOOM, Number(nextViewport.workspaceZoom.toFixed(2))))
+    const scaledWidth = WORKSPACE_CANVAS_SURFACE_WIDTH * workspaceZoom
+    const scaledHeight = WORKSPACE_CANVAS_SURFACE_HEIGHT * workspaceZoom
+    const maxPanX = WORKSPACE_VIEWPORT_PADDING
+    const maxPanY = WORKSPACE_VIEWPORT_PADDING
+    const minPanX = Math.min(WORKSPACE_VIEWPORT_PADDING, viewportWidth - scaledWidth - WORKSPACE_VIEWPORT_PADDING)
+    const minPanY = Math.min(WORKSPACE_VIEWPORT_PADDING, viewportHeight - scaledHeight - WORKSPACE_VIEWPORT_PADDING)
+
+    return {
+      ...nextViewport,
+      workspaceZoom,
+      panX: Math.max(minPanX, Math.min(maxPanX, nextViewport.panX)),
+      panY: Math.max(minPanY, Math.min(maxPanY, nextViewport.panY))
+    }
+  }
+
   function setViewportZoom(nextZoom: number) {
     const nextWorkspaceZoom = Math.max(MIN_WORKSPACE_ZOOM, Math.min(MAX_WORKSPACE_ZOOM, Number(nextZoom.toFixed(2))))
     const zoomFocusCandidates = documentNodes.filter((node) => node.kind === 'excerpt' || node.kind === 'comment')
@@ -317,7 +344,7 @@ export function MobileWorkspaceCanvas({
       null
     const rect = surfaceRef.current?.getBoundingClientRect()
     if (!rect) {
-      onViewportChange({ ...viewport, workspaceZoom: nextWorkspaceZoom })
+      onViewportChange(clampWorkspaceViewport({ ...viewport, workspaceZoom: nextWorkspaceZoom }))
       return
     }
     const centerX = rect.width / Math.max(appZoom || 1, 0.1) / 2
@@ -325,12 +352,14 @@ export function MobileWorkspaceCanvas({
     const currentZoom = Math.max(viewport.workspaceZoom, MIN_WORKSPACE_ZOOM)
     const worldCenterX = zoomFocusNode ? zoomFocusNode.x + zoomFocusNode.width / 2 : (centerX - viewport.panX) / currentZoom
     const worldCenterY = zoomFocusNode ? zoomFocusNode.y + Math.min(zoomFocusNode.height / 2, 72) : (targetScreenY - viewport.panY) / currentZoom
-    onViewportChange({
-      ...viewport,
-      workspaceZoom: nextWorkspaceZoom,
-      panX: centerX - worldCenterX * nextWorkspaceZoom,
-      panY: targetScreenY - worldCenterY * nextWorkspaceZoom
-    })
+    onViewportChange(
+      clampWorkspaceViewport({
+        ...viewport,
+        workspaceZoom: nextWorkspaceZoom,
+        panX: centerX - worldCenterX * nextWorkspaceZoom,
+        panY: targetScreenY - worldCenterY * nextWorkspaceZoom
+      })
+    )
   }
 
   function focusActiveNodeEditor() {
@@ -465,12 +494,14 @@ export function MobileWorkspaceCanvas({
 
   function commitWorkspaceDraft(kind: 'pen' | 'pencil' | 'freeform-highlight', points: NormalizedPoint[]) {
     if (!toolSettings || points.length < 2) return
+    const smoothedPoints = smoothInkPath(points, kind, toolSettings)
+    if (smoothedPoints.length < 2) return
     if (kind === 'freeform-highlight') {
       onWorkspaceFreeformHighlight?.({
         id: crypto.randomUUID(),
         documentId,
         surface: 'workspace',
-        points,
+        points: smoothedPoints,
         color: toolSettings.highlight.color,
         size: toolSettings.highlight.size,
         opacity: toolSettings.highlight.opacity,
@@ -484,7 +515,7 @@ export function MobileWorkspaceCanvas({
       documentId,
       surface: 'workspace',
       tool: isPencil ? 'pencil' : 'pen',
-      points,
+      points: smoothedPoints,
       color: isPencil ? toolSettings.pencil.color : toolSettings.pen.color,
       size: isPencil ? toolSettings.pencil.size : toolSettings.pen.size,
       opacity: isPencil ? toolSettings.pencil.opacity : undefined
@@ -604,6 +635,17 @@ export function MobileWorkspaceCanvas({
     setToolbarToolsOpen(false)
   }, [activeNode?.id, activeNode?.tags])
 
+  useLayoutEffect(() => {
+    const clamped = clampWorkspaceViewport(viewport)
+    if (
+      Math.abs(clamped.panX - viewport.panX) > 0.5 ||
+      Math.abs(clamped.panY - viewport.panY) > 0.5 ||
+      Math.abs(clamped.workspaceZoom - viewport.workspaceZoom) > 0.01
+    ) {
+      onViewportChange(clamped)
+    }
+  }, [viewport.panX, viewport.panY, viewport.workspaceZoom, appZoom, linkLayerBounds.width, linkLayerBounds.height])
+
   useEffect(() => {
     if (toolbarNodeId && !documentNodes.some((node) => node.id === toolbarNodeId)) {
       setToolbarNodeId(null)
@@ -646,7 +688,13 @@ export function MobileWorkspaceCanvas({
         if (!dragging || locked) return
         event.currentTarget.setPointerCapture(event.pointerId)
         if (dragging.kind === 'pan') {
-          onViewportChange({ ...viewport, panX: dragging.panX + event.clientX - dragging.startX, panY: dragging.panY + event.clientY - dragging.startY })
+          onViewportChange(
+            clampWorkspaceViewport({
+              ...viewport,
+              panX: dragging.panX + event.clientX - dragging.startX,
+              panY: dragging.panY + event.clientY - dragging.startY
+            })
+          )
           return
         }
         if (dragging.kind === 'resize') {
@@ -1140,8 +1188,8 @@ function WorkspaceInkLayer({
     return () => observer.disconnect()
   }, [highlights, inkStrokes, viewport])
 
-  function workspacePointFromPointer(event: ReactPointerEvent<HTMLCanvasElement>): NormalizedPoint {
-    const rect = event.currentTarget.getBoundingClientRect()
+  function workspacePointFromPointer(event: Pick<PointerEvent, 'clientX' | 'clientY'>, canvas: HTMLCanvasElement): NormalizedPoint {
+    const rect = canvas.getBoundingClientRect()
     return {
       x: (event.clientX - rect.left - viewport.panX) / viewport.workspaceZoom,
       y: (event.clientY - rect.top - viewport.panY) / viewport.workspaceZoom
@@ -1154,7 +1202,7 @@ function WorkspaceInkLayer({
     event.stopPropagation()
     event.currentTarget.setPointerCapture(event.pointerId)
     pointerDownRef.current = true
-    const point = workspacePointFromPointer(event)
+    const point = workspacePointFromPointer(event, event.currentTarget)
 
     if (toolMode === 'eraser') {
       onErase(point)
@@ -1169,20 +1217,20 @@ function WorkspaceInkLayer({
     if (!active || !settings || !pointerDownRef.current) return
     event.preventDefault()
     event.stopPropagation()
-    const point = workspacePointFromPointer(event)
-
     if (toolMode === 'eraser') {
-      onErase(point)
+      getCoalescedPointerEvents(event.nativeEvent).forEach((pointerEvent) => {
+        onErase(workspacePointFromPointer(pointerEvent, event.currentTarget))
+      })
       return
     }
     if (toolMode !== 'pen' && toolMode !== 'pencil' && toolMode !== 'freeform-highlight') return
 
-    const previous = liveDraftRef.current?.points.at(-1)
-    if (previous) {
-      drawLiveWorkspaceInkSegment(event.currentTarget, liveDraftRef.current?.kind ?? toolMode, [previous, point], viewport, settings)
-    }
     if (liveDraftRef.current) {
-      liveDraftRef.current = { ...liveDraftRef.current, points: [...liveDraftRef.current.points, point] }
+      const coalescedPoints = getCoalescedPointerEvents(event.nativeEvent).map((pointerEvent) =>
+        workspacePointFromPointer(pointerEvent, event.currentTarget)
+      )
+      liveDraftRef.current = { ...liveDraftRef.current, points: [...liveDraftRef.current.points, ...coalescedPoints] }
+      drawWorkspaceInkFrame(event.currentTarget, highlights, inkStrokes, viewport, settings, liveDraftRef.current)
     }
   }
 
@@ -1230,17 +1278,42 @@ function resizeWorkspaceInkCanvas(canvas: HTMLCanvasElement) {
   context?.setTransform(dpr, 0, 0, dpr, 0, 0)
 }
 
-function drawLiveWorkspaceInkSegment(
+function drawWorkspaceInkFrame(
   canvas: HTMLCanvasElement,
-  kind: 'pen' | 'pencil' | 'freeform-highlight',
-  points: NormalizedPoint[],
+  highlights: FreeformHighlight[],
+  inkStrokes: InkStroke[],
   viewport: MobileWorkspaceViewport & { workspaceZoom: number },
-  settings: MobileToolSettings
+  settings: MobileToolSettings,
+  draft?: { kind: 'pen' | 'pencil' | 'freeform-highlight'; points: NormalizedPoint[] } | null
 ) {
   resizeWorkspaceInkCanvas(canvas)
   const context = canvas.getContext('2d')
   if (!context) return
-  if (kind === 'freeform-highlight') {
+  const rect = canvas.getBoundingClientRect()
+  context.clearRect(0, 0, Math.max(1, rect.width), Math.max(1, rect.height))
+
+  highlights.forEach((highlight) => {
+    drawWorkspaceInkPath(context, highlight.points, viewport, {
+      color: highlight.color,
+      size: highlight.size ?? 18,
+      opacity: highlight.opacity ?? 0.42,
+      kind: 'highlighter'
+    })
+  })
+  inkStrokes.forEach((stroke) => {
+    drawWorkspaceInkPath(context, stroke.points, viewport, {
+      color: stroke.color,
+      size: stroke.size ?? 4,
+      opacity: stroke.tool === 'pencil' ? stroke.opacity ?? 0.58 : 0.92,
+      kind: stroke.tool === 'pencil' ? 'pencil' : 'pen'
+    })
+  })
+
+  if (!draft) return
+  const predicted = getPredictedInkPoint(draft.points)
+  const previewPoints = predicted ? [...draft.points, predicted] : draft.points
+  const points = smoothInkPath(previewPoints, draft.kind, settings)
+  if (draft.kind === 'freeform-highlight') {
     drawWorkspaceInkPath(context, points, viewport, {
       color: settings.highlight.color,
       size: settings.highlight.size,
@@ -1249,7 +1322,7 @@ function drawLiveWorkspaceInkSegment(
     })
     return
   }
-  if (kind === 'pencil') {
+  if (draft.kind === 'pencil') {
     drawWorkspaceInkPath(context, points, viewport, {
       color: settings.pencil.color,
       size: settings.pencil.size,
@@ -1281,17 +1354,14 @@ function drawWorkspaceInkPath(
   context.lineWidth = Math.max(1.5, options.size * viewport.workspaceZoom)
   context.lineCap = 'round'
   context.lineJoin = 'round'
-
-  context.beginPath()
-  context.moveTo(points[0].x * viewport.workspaceZoom + viewport.panX, points[0].y * viewport.workspaceZoom + viewport.panY)
-  for (let index = 1; index < points.length - 1; index += 1) {
-    const next = points[index + 1]
-    const midpointX = ((points[index].x + next.x) / 2) * viewport.workspaceZoom + viewport.panX
-    const midpointY = ((points[index].y + next.y) / 2) * viewport.workspaceZoom + viewport.panY
-    context.quadraticCurveTo(points[index].x * viewport.workspaceZoom + viewport.panX, points[index].y * viewport.workspaceZoom + viewport.panY, midpointX, midpointY)
-  }
-  const last = points[points.length - 1]
-  context.lineTo(last.x * viewport.workspaceZoom + viewport.panX, last.y * viewport.workspaceZoom + viewport.panY)
+  drawInkCurve(
+    context,
+    points.map((point) => ({
+      x: point.x * viewport.workspaceZoom + viewport.panX,
+      y: point.y * viewport.workspaceZoom + viewport.panY
+    })),
+    { width: 1, height: 1 }
+  )
   context.stroke()
   context.restore()
 }

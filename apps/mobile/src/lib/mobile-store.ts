@@ -484,8 +484,8 @@ export function normalizeMobileWorkspaceState(
 
 export function normalizeWorkspaceViewport(viewport?: Partial<MobileWorkspaceViewport>): MobileWorkspaceViewport {
   return {
-    panX: viewport?.panX ?? 72,
-    panY: viewport?.panY ?? 48
+    panX: viewport?.panX ?? 16,
+    panY: viewport?.panY ?? 16
   }
 }
 

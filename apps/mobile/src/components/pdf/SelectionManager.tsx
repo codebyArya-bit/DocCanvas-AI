@@ -145,22 +145,24 @@ export function SelectionManager({
     const selectionTop = Math.min(...selectionClientRects.map((rect) => rect.top))
     const selectionRight = Math.max(...selectionClientRects.map((rect) => rect.right))
     const tallestSelectionLine = Math.max(...selectionClientRects.map((rect) => rect.height), selectionRect.height)
-    const loupeWidth = Math.min(Math.max(160, root.clientWidth - 24), Math.max(180, selectionRect.width + 52))
-    const loupeMaxWidth = Math.min(Math.max(220, root.clientWidth - 24), 360)
-    const loupeFontSize = Math.max(18, Math.min(30, tallestSelectionLine * 1.18))
-    const loupeHeightEstimate = loupeFontSize * 2.7 + 28
+    const loupeWidth = Math.min(Math.max(136, root.clientWidth - 24), Math.max(156, selectionRect.width + 36))
+    const loupeMaxWidth = Math.min(Math.max(180, root.clientWidth - 24), 300)
+    const loupeFontSize = Math.max(15, Math.min(24, tallestSelectionLine * 1.05))
+    const loupeHeightEstimate = loupeFontSize * 2.45 + 22
+    const loupeGap = 6
+    const safeTop = Math.max(rootRect.top + 12, getCommandbarSafeTop())
     const preferredLeft = selectionLeft - rootRect.left + (selectionRight - selectionLeft) / 2 - loupeWidth / 2
-    const preferredAboveTop = selectionTop - rootRect.top - loupeHeightEstimate - 8
+    const preferredAboveTop = selectionTop - rootRect.top - loupeHeightEstimate - loupeGap
     const left = Math.max(rootRect.left + 12, Math.min(rootRect.right - loupeWidth - 12, rootRect.left + preferredLeft))
     const aboveTop = rootRect.top + preferredAboveTop
-    const belowTop = selectionRect.bottom + 8
-    const top = aboveTop >= rootRect.top + 12
+    const belowTop = selectionRect.bottom + loupeGap
+    const top = aboveTop >= safeTop
       ? aboveTop
       : Math.min(rootRect.bottom - loupeHeightEstimate - 12, belowTop)
 
     setLoupeState({
       left,
-      top,
+      top: Math.max(safeTop, top),
       text,
       selectionColor: popupState?.selection.selectionColor ?? '#5d5df6',
       width: loupeWidth,
@@ -194,7 +196,8 @@ export function SelectionManager({
       viewportWidth: window.innerWidth,
       viewportHeight: window.innerHeight,
       selectionRect: domRectToSelectionRect(selectionRect),
-      selectionRects: selectionClientRects.map(domRectToSelectionRect)
+      selectionRects: selectionClientRects.map(domRectToSelectionRect),
+      viewportSafeTop: getCommandbarSafeTop()
     })
 
     const anchorId = buildPageAnchor({
@@ -570,8 +573,18 @@ function resolvePdfPopupPosition(
     viewportWidth: window.innerWidth,
     viewportHeight: window.innerHeight,
     selectionRect,
-    selectionRects: popup.selectionClientRects?.map(storedRectToViewportRect)
+    selectionRects: popup.selectionClientRects?.map(storedRectToViewportRect),
+    viewportSafeTop: getCommandbarSafeTop()
   })
+}
+
+function getCommandbarSafeTop() {
+  if (typeof document === 'undefined') return 76
+
+  const commandbar = document.querySelector<HTMLElement>('.mobile-viewer-commandbar')
+  const bottom = commandbar?.getBoundingClientRect().bottom
+
+  return typeof bottom === 'number' && Number.isFinite(bottom) ? Math.max(76, bottom + 8) : 76
 }
 
 function storedRectToViewportRect(bounds: SelectionPopupState['selectionBounds']): SelectionViewportRect {

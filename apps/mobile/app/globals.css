@@ -23,11 +23,12 @@
 html,
 body {
   margin: 0;
+  width: 100%;
   min-height: 100%;
   max-width: 100dvw;
   background: var(--bg);
   color: var(--text);
-  overflow-x: hidden;
+  overflow: hidden;
   font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, "Inter", sans-serif;
   letter-spacing: 0;
 }
@@ -1023,11 +1024,12 @@ button {
 }
 
 .mobile-viewer-zoom-frame {
-  position: relative;
-  width: 100dvw;
-  height: 100dvh;
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
   overflow: hidden;
-  background: var(--bg);
+  background: var(--mobile-bg, #eef5fb);
 }
 
 .mobile-viewer {
@@ -1043,7 +1045,8 @@ button {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.78), rgba(238, 244, 248, 0.92)),
     var(--bg);
-  transform-origin: top left;
+  transform-origin: left top;
+  backface-visibility: hidden;
 }
 
 .mobile-viewer-commandbar {
@@ -1838,7 +1841,8 @@ button.mobile-left-popup-item,
 
 .mobile-source-pane-ink-canvas {
   position: absolute;
-  inset: 0;
+  top: 0;
+  left: 0;
   z-index: 26;
   width: 100%;
   height: 100%;
@@ -2950,12 +2954,12 @@ button.mobile-left-popup-item,
 .document-selection-loupe {
   position: fixed;
   z-index: 95;
-  width: min(var(--selection-loupe-width, 260px), calc(100vw - 24px));
-  min-width: 160px;
-  max-width: min(var(--selection-loupe-max-width, 360px), calc(100vw - 24px));
+  width: min(var(--selection-loupe-width, 220px), calc(100vw - 24px));
+  min-width: 136px;
+  max-width: min(var(--selection-loupe-max-width, 300px), calc(100vw - 24px));
   border: 1px solid rgba(164, 176, 255, 0.56);
-  border-radius: 18px;
-  padding: 12px 16px;
+  border-radius: 14px;
+  padding: 9px 12px;
   background: rgba(255, 255, 255, 0.98);
   box-shadow: 0 16px 28px rgba(15, 23, 42, 0.18);
   box-sizing: border-box;
@@ -3328,11 +3332,11 @@ button.mobile-left-popup-item,
 
 .selection-action-popup {
   position: fixed;
-  z-index: 360;
-  width: min(480px, calc(100vw - 24px));
+  z-index: 1800;
+  width: min(420px, calc(100vw - 24px));
   max-width: calc(100vw - 24px);
-  padding: 10px 12px 8px;
-  border-radius: 14px;
+  padding: 8px 10px 7px;
+  border-radius: 12px;
   background: rgba(248, 250, 255, 0.98);
   border: 1px solid rgba(164, 176, 255, 0.5);
   box-shadow: 0 12px 32px rgba(77, 93, 133, 0.16);
@@ -3350,7 +3354,7 @@ button.mobile-left-popup-item,
 }
 
 .selection-action-content {
-  max-height: min(38vh, 300px);
+  max-height: min(32vh, 240px);
   overflow: auto;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
@@ -3362,8 +3366,8 @@ button.mobile-left-popup-item,
 .selection-action-popup.is-mobile-collapsed,
 .selection-action-popup.is-mobile-compact,
 .selection-action-popup.is-mobile-docked:not(.is-mobile-expanded) {
-  width: min(480px, calc(100vw - 24px));
-  max-height: min(42vh, 360px);
+  width: min(420px, calc(100vw - 24px));
+  max-height: min(36vh, 280px);
   overflow: visible;
 }
 
@@ -3383,13 +3387,13 @@ button.mobile-left-popup-item,
 }
 
 .selection-action-popup.is-mobile-expanded {
-  max-height: min(38vh, 280px);
+  max-height: min(34vh, 250px);
   overflow: hidden;
 }
 
 .selection-action-popup.is-mobile-docked {
-  width: min(480px, calc(100vw - 24px));
-  max-height: min(34vh, 240px);
+  width: min(420px, calc(100vw - 24px));
+  max-height: min(32vh, 220px);
 }
 
 .selection-action-popup::before {
@@ -4003,12 +4007,12 @@ body.is-selecting-pdf-text .page-anchor-indicator-right {
   .selection-action-popup.is-mobile-docked {
     width: calc(100% - 20px);
     max-width: calc(100% - 20px);
-    max-height: min(44vh, 320px);
+    max-height: min(38vh, 270px);
   }
 
   .selection-action-popup.is-mobile-collapsed,
   .selection-action-popup.is-mobile-compact {
-    max-height: min(44vh, 320px);
+    max-height: min(38vh, 270px);
     overflow: visible;
   }
 
@@ -4018,8 +4022,8 @@ body.is-selecting-pdf-text .page-anchor-indicator-right {
   }
 
   .selection-action-pill {
-    padding: 8px 12px;
-    font-size: 13px;
+    padding: 7px 10px;
+    font-size: 12px;
   }
 }
 
@@ -4734,7 +4738,7 @@ body.is-selecting-pdf-text .page-anchor-indicator-right {
 }
 
 .mobile-modal:has(.mobile-more-settings-panel--improved) {
-  width: min(760px, calc(100vw - 32px));
+  width: min(380px, calc(100vw - 32px));
 }
 
 .mobile-modal:has(.mobile-more-settings-panel--improved) .mobile-modal-body {
@@ -7625,10 +7629,9 @@ body.is-selecting-pdf-text .page-anchor-indicator-right {
   }
 }
 
-/* Viewer zoom/scroll guard: vertical scroll yes, horizontal scroll never. */
+/* Viewer zoom/scroll guard: fixed frame stays flush; inner panes scroll. */
 .mobile-viewer-zoom-frame {
-  overflow-x: hidden !important;
-  overflow-y: auto !important;
+  overflow: hidden !important;
 }
 
 .mobile-viewer {
@@ -7985,7 +7988,7 @@ body.is-selecting-pdf-text .page-anchor-indicator-right {
   --z-workspace-local-toolbar: 160;
   --z-settings-backdrop: 210;
   --z-settings-panel: 211;
-  --z-selection-popup: 700;
+  --z-selection-popup: 1800;
   --z-floating-toolbar: 720;
   --z-left-popup-backdrop: 800;
   --z-left-popup: 810;
@@ -8959,8 +8962,7 @@ body:has(.mobile-modal-backdrop:has(.lt-tag-manager-content)) .mobile-modal-back
 /* Portal-backed modal stacking: body-level fixed UI must beat transformed viewer chrome. */
 .mobile-viewer-zoom-frame {
   transform: none !important;
-  overflow-x: hidden !important;
-  overflow-y: auto !important;
+  overflow: hidden !important;
 }
 
 .mobile-viewer-commandbar {
@@ -9015,4 +9017,73 @@ body:has(.mobile-left-popup-backdrop) .mobile-left-popup-backdrop {
 
 body:has(.mobile-left-popup-backdrop) .mobile-left-popup {
   z-index: 9991 !important;
+}
+/* Compact LiquidText settings panel (approx 50% smaller) */
+/* Compact LiquidText settings panel (approx 50% smaller) */
+.lt-settings-panel {
+  font-size: 12px;
+}
+
+.lt-settings-project {
+  padding: 8px 16px 6px;
+}
+
+.lt-settings-project strong {
+  font-size: 14px;
+}
+
+.lt-settings-project span {
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.lt-settings-section-title {
+  font-size: 12px;
+  padding: 1px 6px;
+  min-height: 20px;
+}
+
+.lt-settings-row {
+  min-height: 34px;
+  padding: 4px 8px;
+  gap: 6px;
+}
+
+.lt-settings-icon {
+  width: 26px;
+  height: 26px;
+  font-size: 10px;
+}
+
+.lt-settings-label {
+  font-size: 12px;
+}
+
+.lt-settings-chevron {
+  font-size: 14px;
+}
+
+.lt-settings-toggle {
+  width: 30px;
+  height: 18px;
+}
+
+.lt-settings-toggle span {
+  width: 10px;
+  height: 10px;
+  top: 3px;
+  left: 3px;
+}
+
+.lt-settings-toggle.is-on span {
+  transform: translateX(12px);
+}
+
+.lt-settings-panel {
+  padding-bottom: 24px;
+}
+
+.lt-settings-section:last-child {
+  margin-bottom: 0;
+  padding-bottom: 8px;
 }
