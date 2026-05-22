@@ -1829,7 +1829,11 @@ export function DocumentViewer({ docId }: { docId: string }) {
                 <div className="mobile-loading-panel">No visual PDF bytes found for this document.</div>
               )}
             </div>
-            {sourceMagnifier && !selectionPopup ? <SourceSelectionMagnifierLens magnifier={sourceMagnifier} /> : null}
+            {sourceMagnifier && !selectionPopup ? (
+              <ModalPortal>
+                <SourceSelectionMagnifierLens magnifier={sourceMagnifier} />
+              </ModalPortal>
+            ) : null}
             {sourceKind !== 'web-clean' && record && workspace ? (
               <SelectionManager
                 rootRef={sourcePaneRef}
@@ -2059,24 +2063,26 @@ export function DocumentViewer({ docId }: { docId: string }) {
       </footer>
 
       {selectionPopup ? (
-        <SelectionActionPopup
-          key={`${selectionPopup.selection.text}:${selectionPopup.left}:${selectionPopup.top}`}
-          popup={selectionPopup}
-          availableTags={workspaceTagOptions(workspace)}
-          bookmarked={workspace.bookmarks.some((bookmark) => bookmark.sourceAnchorId === buildPageAnchor({ ...selectionPopup.selection, selectionColor: selectionPopup.color ?? '#5d5df6', tags: selectionPopup.tags }).id)}
-          onExcerpt={() => createExcerptFromSelection(selectionPopup)}
-          onComment={() => createCommentFromSelection(selectionPopup)}
-          onBookmark={() => bookmarkSelection(selectionPopup)}
-          onTags={(tags) => tagSelection(selectionPopup, tags)}
-          onClearTags={() => tagSelection(selectionPopup, [])}
-          onColor={(color) => recolorSelection(selectionPopup, color)}
-          onCopy={() => { void navigator.clipboard?.writeText(selectionPopup.selection.text).catch(() => {}) }}
-          onClear={() => {
-            clearSourceSelection(selectionPopup.selection)
-            setSelectionPopup(null)
-            try { document.getSelection()?.removeAllRanges() } catch {}
-          }}
-        />
+        <ModalPortal>
+          <SelectionActionPopup
+            key={`${selectionPopup.selection.text}:${selectionPopup.left}:${selectionPopup.top}`}
+            popup={selectionPopup}
+            availableTags={workspaceTagOptions(workspace)}
+            bookmarked={workspace.bookmarks.some((bookmark) => bookmark.sourceAnchorId === buildPageAnchor({ ...selectionPopup.selection, selectionColor: selectionPopup.color ?? '#5d5df6', tags: selectionPopup.tags }).id)}
+            onExcerpt={() => createExcerptFromSelection(selectionPopup)}
+            onComment={() => createCommentFromSelection(selectionPopup)}
+            onBookmark={() => bookmarkSelection(selectionPopup)}
+            onTags={(tags) => tagSelection(selectionPopup, tags)}
+            onClearTags={() => tagSelection(selectionPopup, [])}
+            onColor={(color) => recolorSelection(selectionPopup, color)}
+            onCopy={() => { void navigator.clipboard?.writeText(selectionPopup.selection.text).catch(() => {}) }}
+            onClear={() => {
+              clearSourceSelection(selectionPopup.selection)
+              setSelectionPopup(null)
+              try { document.getSelection()?.removeAllRanges() } catch {}
+            }}
+          />
+        </ModalPortal>
       ) : null}
 
       {panelMode === 'page-edit' && pdfState ? (
@@ -5688,7 +5694,10 @@ function buildUnionRect(rects: DOMRect[]) {
 function getCommandbarSafeTop() {
   if (typeof document === 'undefined') return 76
 
-  const commandbar = document.querySelector<HTMLElement>('.mobile-viewer-commandbar')
+  const commandbar =
+    document.querySelector<HTMLElement>('.mobile-viewer-commandbar') ??
+    document.querySelector<HTMLElement>('nav.common-bar') ??
+    document.querySelector<HTMLElement>('.nav.common-bar')
   const bottom = commandbar?.getBoundingClientRect().bottom
 
   return typeof bottom === 'number' && Number.isFinite(bottom) ? Math.max(76, bottom + 8) : 76

@@ -1,6 +1,7 @@
 'use client'
 
 import { type CSSProperties, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { SelectionArtifactInput } from '../../lib/excerpts/pdf-selection'
 import { buildPageAnchor, capturePdfSelection } from '../../lib/excerpts/pdf-selection'
 import { resolveSelectionPopupPosition, type SelectionPopupPlacement, type SelectionViewportRect } from '../../lib/selection-popup-position'
@@ -336,45 +337,52 @@ export function SelectionManager({
   }, [clearSelection])
 
   // Mobile-optimized popup component
+  const canPortal = typeof document !== 'undefined' && document.body
+
   return (
     <>
-      {loupeState ? <SelectionLoupe loupe={loupeState} /> : null}
-      {popupState ? (
-        <PdfSelectionActionPopup
-          key={popupState.anchorId}
-          popup={popupState}
-          availableTags={availableTags}
-          bookmarked={bookmarkedSet.has(popupState.anchorId)}
-          onSizeChange={setPopupSize}
-          onAutoExcerpt={() => {
-            onAutoExcerpt({ selection: popupState.selection, viewportRatio: popupState.viewportRatio })
-            setPopupState(null)
-          }}
-          onComment={() => {
-            onComment({ selection: popupState.selection, viewportRatio: popupState.viewportRatio })
-            setPopupState(null)
-          }}
-          onBookmark={() => {
-            onBookmark(popupState.selection)
-            setPopupState(null)
-            clearSelection()
-          }}
-          onColor={(color) => {
-            const nextSelection = { ...popupState.selection, selectionColor: color }
-            setPopupState({ ...popupState, selection: nextSelection })
-            onSelectionChange?.(nextSelection)
-          }}
-          onTags={(tags) => {
-            const nextSelection = { ...popupState.selection, tags }
-            setPopupState({ ...popupState, selection: nextSelection, tags })
-            onTag(nextSelection, tags)
-          }}
-          onClear={() => {
-            onClearSourceSelection?.(popupState.selection)
-            clearSelection()
-          }}
-        />
-      ) : null}
+      {loupeState && canPortal
+        ? createPortal(<SelectionLoupe loupe={loupeState} />, document.body)
+        : null}
+      {popupState && canPortal
+        ? createPortal(
+            <PdfSelectionActionPopup
+              key={popupState.anchorId}
+              popup={popupState}
+              availableTags={availableTags}
+              bookmarked={bookmarkedSet.has(popupState.anchorId)}
+              onSizeChange={setPopupSize}
+              onAutoExcerpt={() => {
+                onAutoExcerpt({ selection: popupState.selection, viewportRatio: popupState.viewportRatio })
+                setPopupState(null)
+              }}
+              onComment={() => {
+                onComment({ selection: popupState.selection, viewportRatio: popupState.viewportRatio })
+                setPopupState(null)
+              }}
+              onBookmark={() => {
+                onBookmark(popupState.selection)
+                setPopupState(null)
+                clearSelection()
+              }}
+              onColor={(color) => {
+                const nextSelection = { ...popupState.selection, selectionColor: color }
+                setPopupState({ ...popupState, selection: nextSelection })
+                onSelectionChange?.(nextSelection)
+              }}
+              onTags={(tags) => {
+                const nextSelection = { ...popupState.selection, tags }
+                setPopupState({ ...popupState, selection: nextSelection, tags })
+                onTag(nextSelection, tags)
+              }}
+              onClear={() => {
+                onClearSourceSelection?.(popupState.selection)
+                clearSelection()
+              }}
+            />,
+            document.body
+          )
+        : null}
     </>
   )
 }
@@ -581,7 +589,10 @@ function resolvePdfPopupPosition(
 function getCommandbarSafeTop() {
   if (typeof document === 'undefined') return 76
 
-  const commandbar = document.querySelector<HTMLElement>('.mobile-viewer-commandbar')
+  const commandbar =
+    document.querySelector<HTMLElement>('.mobile-viewer-commandbar') ??
+    document.querySelector<HTMLElement>('nav.common-bar') ??
+    document.querySelector<HTMLElement>('.nav.common-bar')
   const bottom = commandbar?.getBoundingClientRect().bottom
 
   return typeof bottom === 'number' && Number.isFinite(bottom) ? Math.max(76, bottom + 8) : 76
