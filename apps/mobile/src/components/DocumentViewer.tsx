@@ -141,6 +141,8 @@ type GlobalInkDraft = {
   kind: 'freeform-highlight' | 'pen' | 'pencil'
   surface: GlobalInkSurface['kind']
   pageNumber?: number
+  sourcePageElement?: HTMLElement | null
+  sourcePageBounds?: { left: number; top: number; width: number; height: number }
   points: NormalizedPoint[]
   screenPoints: NormalizedPoint[]
   canvasSize?: { width: number; height: number }
@@ -918,6 +920,7 @@ export function DocumentViewer({ docId }: { docId: string }) {
     )
   }
 
+  // ========== FIXED routeGlobalInkPoint ==========
   function routeGlobalInkPoint(
     clientX: number,
     clientY: number,
@@ -926,22 +929,26 @@ export function DocumentViewer({ docId }: { docId: string }) {
   ): GlobalInkSurface | null {
     if (!record || !workspace) return null
 
+    // If a surface is already active for this gesture, stick to it
     if (activeSurface === 'workspace') {
       return routeWorkspaceInkPoint(clientX, clientY)
     }
-
     if (activeSurface === 'source-pane') {
       return routeSourcePaneFreeInkPoint(clientX, clientY)
     }
-
     if (activeSurface === 'source') {
       return routeSourceInkPoint(clientX, clientY, activeSourcePageNumber)
     }
 
+    // For drawing tools, first try to draw on a specific PDF page (source)
     if (toolMode === 'pen' || toolMode === 'pencil' || toolMode === 'freeform-highlight' || toolMode === 'eraser') {
+      const sourcePage = routeSourceInkPoint(clientX, clientY)
+      if (sourcePage) return sourcePage
+      // Fall back to free‑pane drawing (outside any page) or workspace
       return routeSourcePaneFreeInkPoint(clientX, clientY) ?? routeWorkspaceInkPoint(clientX, clientY)
     }
 
+    // For select mode, still use source (for text selection) before workspace
     return routeSourceInkPoint(clientX, clientY) ?? routeWorkspaceInkPoint(clientX, clientY)
   }
 
@@ -1141,6 +1148,7 @@ export function DocumentViewer({ docId }: { docId: string }) {
 
   function commitGlobalInkDraft(draft: GlobalInkDraft) {
     if (!record || !toolSettings || draft.points.length < 2) return
+    if (draft.surface === 'source' && !draft.pageNumber) return
     const points = smoothInkPath(draft.points, draft.kind, toolSettings)
     if (points.length < 2) return
 
@@ -3101,9 +3109,40 @@ function GlobalInkCaptureLayer({
     )
   }
 
+function sourcePageBoundsFromRoute(route: GlobalInkSurface | null) {
+  if (!route || route.kind !== 'source') return undefined
+  const rect = route.element.getBoundingClientRect()
+  return {
+    left: rect.left,
+    top: rect.top,
+    width: rect.width,
+    height: rect.height
+  }
+}
+
+function routePointAgainstInitialSourcePageBounds(
+  clientX: number,
+  clientY: number,
+  draft: GlobalInkDraft
+): NormalizedPoint | null {
+  if (!draft.pageNumber || !draft.sourcePageElement || !draft.sourcePageBounds) return null
+  const bounds = draft.sourcePageBounds
+  const clampedX = Math.max(bounds.left, Math.min(clientX, bounds.left + bounds.width))
+  const clampedY = Math.max(bounds.top, Math.min(clientY, bounds.top + bounds.height))
+  const x = (clampedX - bounds.left) / Math.max(1, bounds.width)
+  const y = (clampedY - bounds.top) / Math.max(1, bounds.height)
+  return { x, y }
+}
+
 function handlePointerDown(event: ReactPointerEvent<HTMLCanvasElement>) {
   if (isInteractiveViewerUiTarget(event.target)) return
-  const route = onRoutePoint(event.clientX, event.clientY)
+  const pageRoute = onRoutePoint(event.clientX, event.clientY, 'source')
+  const freePaneRoute = onRoutePoint(event.clientX, event.clientY, 'source-pane')
+  const workspaceRoute = onRoutePoint(event.clientX, event.clientY, 'workspace')
+  const route = toolMode === 'eraser'
+    ? pageRoute ?? freePaneRoute ?? workspaceRoute
+    : pageRoute ?? workspaceRoute
+
   if (!route) return
   event.preventDefault()
   event.stopPropagation()
@@ -3115,6 +3154,8 @@ function handlePointerDown(event: ReactPointerEvent<HTMLCanvasElement>) {
   activePageNumberRef.current = route.kind === 'source' ? route.pageNumber : undefined
   activeCanvasSizeRef.current = (route.kind === 'source' || route.kind === 'source-pane') ? route.canvasSize : undefined
 
+  const sourcePageBounds = sourcePageBoundsFromRoute(route)
+
   if (toolMode === 'eraser') {
     onErase(route, event.clientX, event.clientY)
     return
@@ -3124,6 +3165,8 @@ function handlePointerDown(event: ReactPointerEvent<HTMLCanvasElement>) {
       kind: toolMode,
       surface: route.kind,
       pageNumber: route.kind === 'source' ? route.pageNumber : undefined,
+      sourcePageElement: route.kind === 'source' ? route.element : undefined,
+      sourcePageBounds,
       points: [route.point],
       screenPoints: [screenPointFromReactEvent(event)],
       canvasSize: (route.kind === 'source' || route.kind === 'source-pane') ? route.canvasSize : undefined
@@ -3161,9 +3204,15 @@ function handlePointerDown(event: ReactPointerEvent<HTMLCanvasElement>) {
       )
       if (!route || route.kind !== draft.surface) return
       if (draft.surface === 'source' && route.kind === 'source' && route.pageNumber !== draft.pageNumber) return
+
+      const point = draft.surface === 'source'
+        ? routePointAgainstInitialSourcePageBounds(pointerEvent.clientX, pointerEvent.clientY, draft)
+        : route.point
+      if (!point) return
+
       draftRef.current = {
         ...draft,
-        points: [...draft.points, route.point],
+        points: [...draft.points, point],
         screenPoints: [...draft.screenPoints, screenPoint(pointerEvent, event.currentTarget)],
         canvasSize: activeCanvasSizeRef.current
       }
