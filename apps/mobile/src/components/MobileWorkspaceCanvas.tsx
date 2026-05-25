@@ -216,6 +216,7 @@ export function MobileWorkspaceCanvas({
   const [toolbarToolsOpen, setToolbarToolsOpen] = useState(false)
   const [tagsDraft, setTagsDraft] = useState('')
   const surfaceRef = useRef<HTMLDivElement | null>(null)
+  const knownNodeIdsRef = useRef<Set<string>>(new Set())
   const activeBoardId = activeWorkspaceBoardId ?? 'default-board'
   const documentNodes = useMemo(
     () =>
@@ -394,6 +395,38 @@ export function MobileWorkspaceCanvas({
   function focusNodeEditor(nodeId: string) {
     requestAnimationFrame(() => {
       surfaceRef.current?.querySelector<HTMLElement>(`[data-node-id="${CSS.escape(nodeId)}"] [data-node-editor="true"]`)?.focus()
+    })
+  }
+
+  function revealWorkspaceNode(node: CanvasNode) {
+    const rect = surfaceRef.current?.getBoundingClientRect()
+    if (!rect) return
+
+    const scale = Math.max(appZoom || 1, 0.1)
+    const viewportWidth = rect.width / scale
+    const viewportHeight = rect.height / scale
+    const margin = 48
+
+    const nodeLeft = node.x * viewport.workspaceZoom + viewport.panX
+    const nodeTop = node.y * viewport.workspaceZoom + viewport.panY
+    const nodeRight = (node.x + node.width) * viewport.workspaceZoom + viewport.panX
+    const nodeBottom = (node.y + node.height) * viewport.workspaceZoom + viewport.panY
+
+    let nextPanX = viewport.panX
+    let nextPanY = viewport.panY
+
+    if (nodeLeft < margin) nextPanX += margin - nodeLeft
+    else if (nodeRight > viewportWidth - margin) nextPanX -= nodeRight - (viewportWidth - margin)
+
+    if (nodeTop < margin) nextPanY += margin - nodeTop
+    else if (nodeBottom > viewportHeight - margin) nextPanY -= nodeBottom - (viewportHeight - margin)
+
+    if (Math.abs(nextPanX - viewport.panX) > 1 || Math.abs(nextPanY - viewport.panY) > 1) {
+      onViewportChange(clampWorkspaceViewport({ ...viewport, panX: nextPanX, panY: nextPanY }))
+    }
+
+    requestAnimationFrame(() => {
+      focusNodeEditor(node.id)
     })
   }
 
@@ -645,6 +678,20 @@ export function MobileWorkspaceCanvas({
       onViewportChange(clamped)
     }
   }, [viewport.panX, viewport.panY, viewport.workspaceZoom, appZoom, linkLayerBounds.width, linkLayerBounds.height])
+
+  useLayoutEffect(() => {
+    const currentIds = new Set(documentNodes.map((node) => node.id))
+    const active = documentNodes.find((node) => node.id === activeNodeId)
+    const isNewActiveNode =
+      active &&
+      !knownNodeIdsRef.current.has(active.id) &&
+      (active.kind === 'excerpt' || active.kind === 'comment' || active.kind === 'text')
+
+    knownNodeIdsRef.current = currentIds
+
+    if (!isNewActiveNode) return
+    revealWorkspaceNode(active)
+  }, [documentNodes, activeNodeId, viewport.panX, viewport.panY, viewport.workspaceZoom, appZoom])
 
   useEffect(() => {
     if (toolbarNodeId && !documentNodes.some((node) => node.id === toolbarNodeId)) {
@@ -1033,27 +1080,15 @@ export function MobileWorkspaceCanvas({
                   {node.text}
                 </div>
               ) : visualKind === 'comment' ? (
-                <div
-                  className="workspace-comment-input shared-textbox-editor"
-                  contentEditable
-                  suppressContentEditableWarning
-                  data-node-editor="true"
-                  data-placeholder="Write your comment..."
-                  style={styleToCss(node.textStyle)}
-                  onPointerDown={(event) => {
-                    event.stopPropagation()
+                <MobileCommentEditor
+                  text={node.text ?? ''}
+                  textStyle={node.textStyle}
+                  onActivate={() => {
                     onActiveNodeChange(node.id)
                     setToolbarNodeId(node.id)
                   }}
-                  onClick={(event) => {
-                    event.stopPropagation()
-                    onActiveNodeChange(node.id)
-                    setToolbarNodeId(node.id)
-                  }}
-                  onInput={(event) => updateNode(node.id, { text: event.currentTarget.textContent ?? '' })}
-                >
-                  {node.text ?? ''}
-                </div>
+                  onTextChange={(text) => updateNode(node.id, { text })}
+                />
               ) : (
                 <textarea
                   className="workspace-node-copy shared-textbox-editor"
@@ -1127,6 +1162,51 @@ export function MobileWorkspaceCanvas({
         )}
       </div>
     </section>
+  )
+}
+
+function MobileCommentEditor({
+  text,
+  textStyle,
+  onActivate,
+  onTextChange
+}: {
+  text: string
+  textStyle?: TextStyle
+  onActivate: () => void
+  onTextChange: (text: string) => void
+}) {
+  const editorRef = useRef<HTMLDivElement | null>(null)
+
+  useLayoutEffect(() => {
+    const editor = editorRef.current
+    if (!editor) return
+    if (document.activeElement === editor) return
+    if (editor.textContent !== text) {
+      editor.textContent = text
+    }
+  }, [text])
+
+  return (
+    <div
+      ref={editorRef}
+      className="workspace-comment-input shared-textbox-editor"
+      contentEditable
+      suppressContentEditableWarning
+      data-node-editor="true"
+      data-placeholder="Write your comment..."
+      dir="ltr"
+      style={styleToCss(textStyle)}
+      onPointerDown={(event) => {
+        event.stopPropagation()
+        onActivate()
+      }}
+      onClick={(event) => {
+        event.stopPropagation()
+        onActivate()
+      }}
+      onInput={(event) => onTextChange(event.currentTarget.textContent ?? '')}
+    />
   )
 }
 

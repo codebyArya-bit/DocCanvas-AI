@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject, type WheelEvent as ReactWheelEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist'
+import { degrees, PDFDocument } from 'pdf-lib'
 import type { CanvasNode, PageAnchor, TextStyle } from '@workspace/domain'
 import bookmarkIcon from './bookmark.png'
 import { PdfCanvasPage } from './pdf/PdfCanvasPage'
@@ -64,6 +65,7 @@ import {
   findSemanticSearchHit,
   getPageRotation,
   resetSplitRatio,
+  splitRatioFromPointer,
   sourceKindLabel,
   upsertById,
   viewerGridTemplateColumns,
@@ -124,6 +126,35 @@ type PdfState = {
   document: PDFDocumentProxy
   pageCount: number
   task: PdfLoadingTaskLike
+}
+
+type PageSequenceItem =
+  | { kind: 'pdf'; id: string; pageIndex: number; rotationDegrees?: 90 | -90 | 180 }
+  | { kind: 'blank'; id: string }
+
+function remapSourceDrawingPagesForSequence(
+  current: MobileWorkspaceState,
+  documentId: string,
+  items: PageSequenceItem[]
+): MobileWorkspaceState {
+  const pageNumberBySourcePage = new Map<number, number>()
+  items.forEach((item, index) => {
+    if (item.kind === 'pdf') pageNumberBySourcePage.set(item.pageIndex + 1, index + 1)
+  })
+
+  return {
+    ...current,
+    freeformHighlights: (current.freeformHighlights ?? []).flatMap((entry) => {
+      if (entry.documentId !== documentId || entry.surface === 'workspace' || entry.surface === 'source-pane') return [entry]
+      const nextPageNumber = pageNumberBySourcePage.get(entry.pageNumber ?? 1)
+      return nextPageNumber == null ? [] : [{ ...entry, pageNumber: nextPageNumber }]
+    }),
+    inkStrokes: (current.inkStrokes ?? []).flatMap((entry) => {
+      if (entry.documentId !== documentId || entry.surface === 'workspace' || entry.surface === 'source-pane') return [entry]
+      const nextPageNumber = pageNumberBySourcePage.get(entry.pageNumber ?? 1)
+      return nextPageNumber == null ? [] : [{ ...entry, pageNumber: nextPageNumber }]
+    })
+  }
 }
 
 type DraftPath = {
@@ -1349,49 +1380,118 @@ export function DocumentViewer({ docId }: { docId: string }) {
     void navigator.clipboard?.writeText(value).then(() => setStatus(`${label} copied.`)).catch(() => setStatus(`Could not copy ${label.toLowerCase()}.`))
   }
 
-  function extractPage(pageNumber: number) {
-    if (!record) return
-    const payload = {
-      documentId: record.document.id,
-      title: record.document.title,
-      extractedPages: [pageNumber]
+  async function buildPdfBytesFromSequence(items: PageSequenceItem[], sourceBytes: Uint8Array) {
+    const sourcePdf = await PDFDocument.load(sourceBytes)
+    const outputPdf = await PDFDocument.create()
+    const firstPageSize = sourcePdf.getPageCount() > 0 ? sourcePdf.getPage(0).getSize() : null
+    const blankWidth = firstPageSize?.width ?? 612
+    const blankHeight = firstPageSize?.height ?? 792
+
+    for (const item of items) {
+      if (item.kind === 'pdf') {
+        const [copiedPage] = await outputPdf.copyPages(sourcePdf, [item.pageIndex])
+        if (item.rotationDegrees) {
+          const nextRotation = (copiedPage.getRotation().angle + item.rotationDegrees + 360) % 360
+          copiedPage.setRotation(degrees(nextRotation))
+        }
+        outputPdf.addPage(copiedPage)
+      } else {
+        outputPdf.addPage([blankWidth, blankHeight])
+      }
     }
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = `${record.document.title.replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').toLowerCase() || 'document'}-page-${pageNumber}.json`
-    link.click()
-    URL.revokeObjectURL(url)
-    setStatus(`Page ${pageNumber} extracted.`)
+
+    return outputPdf.save()
   }
 
-  function insertPageAfter(pageNumber: number) {
+  async function commitPdfSequence(items: PageSequenceItem[], statusLabel: string) {
     if (!record) return
-    const now = new Date().toISOString()
-    updateWorkspace((current) => ({
-      ...current,
-      pageEdits: [
-        ...(current.pageEdits ?? []),
-        { id: crypto.randomUUID(), documentId: record.document.id, pageNumber: pageNumber + 1, action: 'insert' }
-      ],
-      updatedAt: now
-    }))
-    setStatus(`Insert page queued after page ${pageNumber}.`)
+    if (!record.bytes) {
+      setStatus('Original PDF bytes are unavailable for page editing.')
+      return
+    }
+    if (items.length === 0) {
+      setStatus('Cannot remove every page.')
+      return
+    }
+
+    try {
+      const bytes = await buildPdfBytesFromSequence(items, record.bytes)
+      const nextBytes = new Uint8Array(bytes)
+      const opened = await openPdfDocument(nextBytes)
+      const now = new Date().toISOString()
+      const nextRecord: MobileDocumentRecord = {
+        ...record,
+        bytes: nextBytes,
+        document: {
+          ...record.document,
+          pageCount: opened.document.numPages,
+          updatedAt: now
+        },
+        lastOpenedAt: now
+      }
+
+      await saveMobileDocument(nextRecord)
+      setRecord(nextRecord)
+      setPdfState((current) => {
+        void destroyPdfTask(current?.task)
+        return { document: opened.document, pageCount: opened.document.numPages, task: opened.task }
+      })
+      updateWorkspace((current) => {
+        const remappedWorkspace = remapSourceDrawingPagesForSequence(current, record.document.id, items)
+        return {
+          ...remappedWorkspace,
+          pageEdits: (current.pageEdits ?? []).filter((edit) => edit.documentId !== record.document.id),
+          viewerStateByDocument: {
+            ...current.viewerStateByDocument,
+            [record.document.id]: {
+              ...getDocumentViewerState(current, record.document.id),
+              activePage: Math.min(getDocumentViewerState(current, record.document.id).activePage, opened.document.numPages),
+              pageRotations: {}
+            }
+          },
+          updatedAt: now
+        }
+      })
+      setStatus(statusLabel)
+      void refreshDocuments()
+    } catch (error) {
+      console.error('Failed to update PDF pages:', error)
+      setStatus('Could not update PDF pages.')
+    }
   }
 
-  function deletePage(pageNumber: number) {
+  async function extractPages(items: PageSequenceItem[], visualStart?: number, visualEnd?: number) {
     if (!record) return
-    const now = new Date().toISOString()
-    updateWorkspace((current) => ({
-      ...current,
-      pageEdits: [
-        ...(current.pageEdits ?? []).filter((edit) => !(edit.documentId === record.document.id && edit.pageNumber === pageNumber && edit.action === 'delete')),
-        { id: crypto.randomUUID(), documentId: record.document.id, pageNumber, action: 'delete' }
-      ],
-      updatedAt: now
-    }))
-    setStatus(`Page ${pageNumber} marked deleted.`)
+    if (!record.bytes) {
+      setStatus('Original PDF bytes are unavailable for extraction.')
+      return
+    }
+    if (!items.length) {
+      setStatus('Select at least one page to extract.')
+      return
+    }
+
+    try {
+      const bytes = await buildPdfBytesFromSequence(items, record.bytes)
+      const pdfBytes = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+      const blob = new Blob([pdfBytes], { type: 'application/pdf' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      const safeTitle = record.document.title.replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').toLowerCase() || 'document'
+      const visualRange = visualStart && visualEnd
+        ? visualStart === visualEnd
+          ? `page-${visualStart}`
+          : `pages-${visualStart}-${visualEnd}`
+        : `${items.length}-pages`
+      link.href = url
+      link.download = `${safeTitle}-${visualRange}.pdf`
+      link.click()
+      URL.revokeObjectURL(url)
+      setStatus(`${items.length} page${items.length === 1 ? '' : 's'} extracted.`)
+    } catch (error) {
+      console.error('Failed to extract PDF pages:', error)
+      setStatus('Could not extract selected pages.')
+    }
   }
 
   function updateTextbox(textbox: SourceTextbox) {
@@ -1443,11 +1543,13 @@ export function DocumentViewer({ docId }: { docId: string }) {
           ? 'vertical'
           : 'horizontal'
         : arrangement
-    const rawRatio =
-      resolvedArrangement === 'vertical'
-        ? ((clientY ?? rect.top + rect.height * 0.54) - rect.top) / Math.max(1, rect.height)
-        : (clientX - rect.left) / Math.max(1, rect.width)
-    pendingSplitRef.current = clampSplitRatio(rawRatio)
+    pendingSplitRef.current = splitRatioFromPointer({
+      clientX,
+      clientY,
+      rect,
+      arrangement: resolvedArrangement,
+      leftHandLayout: workspace.viewerLayout.leftHandLayout ?? false
+    })
     if (splitFrameRef.current != null) return
     splitFrameRef.current = requestAnimationFrame(() => {
       splitFrameRef.current = null
@@ -2091,31 +2193,13 @@ export function DocumentViewer({ docId }: { docId: string }) {
             pdfDocument={pdfState.document}
             pageCount={pdfState.pageCount}
             currentPage={viewerState.activePage}
-            deletedPages={pageEditDeletedPages}
-            rotations={viewerState.pageRotations ?? {}}
             onGoToPage={(pageNumber) => {
               scrollToPage(pageNumber)
               setPanelMode(null)
             }}
-            onRotateCurrent={(degrees, pageNumber) => {
-              const currentRotation = getPageRotation(viewerState, pageNumber)
-              commitViewerState({
-                pageRotations: {
-                  ...(viewerState.pageRotations ?? {}),
-                  [pageNumber]: (currentRotation + degrees + 360) % 360
-                }
-              })
-            }}
-            onRotateAll={(degrees) => {
-              const pageRotations: Record<number, number> = {}
-              for (let pageNumber = 1; pageNumber <= pdfState.pageCount; pageNumber += 1) {
-                pageRotations[pageNumber] = (getPageRotation(viewerState, pageNumber) + degrees + 360) % 360
-              }
-              commitViewerState({ pageRotations })
-            }}
-            onInsertPage={(pageNumber) => insertPageAfter(pageNumber)}
-            onDeletePage={(pageNumber) => deletePage(pageNumber)}
-            onExtractPage={(pageNumber) => extractPage(pageNumber)}
+            onCommitSequence={(items, statusLabel) => commitPdfSequence(items, statusLabel)}
+            onExtractPages={(items, visualStart, visualEnd) => extractPages(items, visualStart, visualEnd)}
+            onBlankPageOpen={() => setStatus('Blank inserted page has no source page.')}
           />
         </Modal>
       ) : null}
@@ -4450,8 +4534,10 @@ function PageEditorThumbnail({
   rotation?: number
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const hasValidPageNumber = pageNumber >= 1 && pageNumber <= document.numPages
 
   useEffect(() => {
+    if (!hasValidPageNumber) return
     const canvas = canvasRef.current
     if (!canvas) return
 
@@ -4476,7 +4562,7 @@ function PageEditorThumbnail({
           if (!cancelled && !isExpectedPdfCancellation(error)) console.error(`Failed thumbnail page ${pageNumber}:`, error)
         })
       } catch (error) {
-        if (!cancelled && !isExpectedPdfCancellation(error)) console.error(`Failed thumbnail page ${pageNumber}:`, error)
+        if (!cancelled && !isExpectedPdfCancellation(error)) console.warn(`Page editor thumbnail skipped for page ${pageNumber}:`, error)
       }
     }
 
@@ -4490,77 +4576,168 @@ function PageEditorThumbnail({
         if (!isExpectedPdfCancellation(error)) console.error(`Failed to cancel thumbnail page ${pageNumber}:`, error)
       }
     }
-  }, [document, pageNumber, rotation])
+  }, [document, hasValidPageNumber, pageNumber, rotation])
 
+  if (pageNumber < 1 || pageNumber > document.numPages) return null
   return <canvas className="page-editor-thumbnail-canvas" ref={canvasRef} />
+}
+
+function pageSequenceItemIdForPage(pageNumber: number) {
+  return `pdf-page-${pageNumber}`
+}
+
+function buildInitialPageSequence(pageCount: number): PageSequenceItem[] {
+  return Array.from({ length: pageCount }, (_, index) => {
+    return {
+      kind: 'pdf' as const,
+      id: pageSequenceItemIdForPage(index + 1),
+      pageIndex: index
+    }
+  })
 }
 
 function PageEditPanel({
   pdfDocument,
   pageCount,
   currentPage,
-  deletedPages,
-  rotations,
   onGoToPage,
-  onRotateCurrent,
-  onRotateAll,
-  onInsertPage,
-  onDeletePage,
-  onExtractPage
+  onCommitSequence,
+  onExtractPages,
+  onBlankPageOpen
 }: {
   pdfDocument: PDFDocumentProxy
   pageCount: number
   currentPage: number
-  deletedPages: Set<number>
-  rotations: Record<number, number>
   onGoToPage: (pageNumber: number) => void
-  onRotateCurrent: (degrees: 90 | -90 | 180, pageNumber: number) => void
-  onRotateAll: (degrees: 90 | -90 | 180) => void
-  onInsertPage: (pageNumber: number) => void
-  onDeletePage: (pageNumber: number) => void
-  onExtractPage: (pageNumber: number) => void
+  onCommitSequence: (items: PageSequenceItem[], statusLabel: string) => Promise<void>
+  onExtractPages: (items: PageSequenceItem[], visualStart?: number, visualEnd?: number) => void | Promise<void>
+  onBlankPageOpen: () => void
 }) {
-  const [selectedPage, setSelectedPage] = useState(currentPage)
-  const [selectedPages, setSelectedPages] = useState<Set<number>>(() => new Set([currentPage]))
+  const totalPageCount = Math.max(0, Math.min(pageCount, pdfDocument.numPages ?? pageCount))
+  const [pageSequence, setPageSequence] = useState<PageSequenceItem[]>(() => buildInitialPageSequence(totalPageCount))
+  const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(() => new Set([pageSequenceItemIdForPage(currentPage)]))
+  const [activeItemId, setActiveItemId] = useState(pageSequenceItemIdForPage(currentPage))
+  const [draggedItemId, setDraggedItemId] = useState<string | null>(null)
   const [actionMode, setActionMode] = useState<'insert' | 'edit' | 'delete' | 'rotate' | null>(null)
   const [visibleActionMode, setVisibleActionMode] = useState<'insert' | 'edit' | 'delete' | 'rotate' | null>(null)
   const [sectionClosing, setSectionClosing] = useState(false)
 
-  const selectedRotation = rotations[selectedPage] ?? 0
-  const selectedDeleted = deletedPages.has(selectedPage)
-  const selectedPageNumbers = useMemo(
-    () => Array.from(selectedPages)
-      .filter((pageNumber) => pageNumber >= 1 && pageNumber <= pageCount)
-      .sort((left, right) => left - right),
-    [pageCount, selectedPages]
+  const activeItem = pageSequence.find((item) => item.id === activeItemId) ?? pageSequence[0]
+  const activeVisualIndex = Math.max(0, pageSequence.findIndex((item) => item.id === activeItem?.id))
+  const selectedItems = useMemo(
+    () => pageSequence.filter((item) => selectedItemIds.has(item.id)),
+    [pageSequence, selectedItemIds]
   )
-  const allPagesSelected = pageCount > 0 && selectedPageNumbers.length === pageCount
-  const selectedLabel = selectedPageNumbers.length > 1 ? `${selectedPageNumbers.length} pages` : `Page ${selectedPage}`
+  const selectedPdfItems = selectedItems.filter((item): item is Extract<PageSequenceItem, { kind: 'pdf' }> => item.kind === 'pdf')
+  const allPagesSelected = pageSequence.length > 0 && selectedItems.length === pageSequence.length
+  const selectedLabel = selectedItems.length > 1 ? `${selectedItems.length} pages` : `Page ${activeVisualIndex + 1}`
 
   useEffect(() => {
-    setSelectedPages((current) => {
-      const next = new Set(Array.from(current).filter((pageNumber) => pageNumber >= 1 && pageNumber <= pageCount))
-      if (next.size === 0 && pageCount > 0) next.add(Math.min(currentPage, pageCount))
-      return next
-    })
-  }, [currentPage, pageCount])
+    const next = buildInitialPageSequence(totalPageCount)
+    const fallbackId = next.find((item) => item.kind === 'pdf' && item.pageIndex === Math.min(currentPage, totalPageCount) - 1)?.id ?? next[0]?.id
+    setPageSequence(next)
+    if (fallbackId) {
+      setSelectedItemIds(new Set([fallbackId]))
+      setActiveItemId(fallbackId)
+    }
+  }, [currentPage, totalPageCount, pdfDocument])
 
-  function selectSinglePage(pageNumber: number) {
-    setSelectedPage(pageNumber)
-    setSelectedPages(new Set([pageNumber]))
+  function selectItem(item: PageSequenceItem, event: ReactMouseEvent<HTMLButtonElement>) {
+    setActiveItemId(item.id)
+    if (event.shiftKey) {
+      const activeIndex = pageSequence.findIndex((entry) => entry.id === activeItemId)
+      const targetIndex = pageSequence.findIndex((entry) => entry.id === item.id)
+      if (activeIndex >= 0 && targetIndex >= 0) {
+        const start = Math.min(activeIndex, targetIndex)
+        const end = Math.max(activeIndex, targetIndex)
+        setSelectedItemIds(new Set(pageSequence.slice(start, end + 1).map((entry) => entry.id)))
+        return
+      }
+    }
+    if (event.ctrlKey || event.metaKey) {
+      setSelectedItemIds((current) => {
+        const next = new Set(current)
+        if (next.has(item.id)) next.delete(item.id)
+        else next.add(item.id)
+        if (next.size === 0) next.add(item.id)
+        return next
+      })
+      return
+    }
+    setSelectedItemIds(new Set([item.id]))
   }
 
   function toggleSelectAllPages() {
     if (allPagesSelected) {
-      setSelectedPages(new Set([selectedPage]))
+      setSelectedItemIds(new Set([activeItem?.id ?? pageSequence[0]?.id].filter(Boolean) as string[]))
       return
     }
-    setSelectedPages(new Set(Array.from({ length: pageCount }, (_, index) => index + 1)))
+    setSelectedItemIds(new Set(pageSequence.map((item) => item.id)))
   }
 
-  function runForSelectedPages(action: (pageNumber: number) => void) {
-    const pagesToUpdate = selectedPageNumbers.length ? selectedPageNumbers : [selectedPage]
-    pagesToUpdate.forEach(action)
+  function insertBlankPageAfterActive() {
+    const insertAfterId = activeItem?.id ?? pageSequence[pageSequence.length - 1]?.id
+    const blankItem: PageSequenceItem = { kind: 'blank', id: crypto.randomUUID() }
+    const insertIndex = Math.max(0, pageSequence.findIndex((item) => item.id === insertAfterId))
+    const nextSequence = [...pageSequence.slice(0, insertIndex + 1), blankItem, ...pageSequence.slice(insertIndex + 1)]
+    setPageSequence(nextSequence)
+    setActiveItemId(blankItem.id)
+    setSelectedItemIds(new Set([blankItem.id]))
+    void onCommitSequence(nextSequence, 'Blank page inserted.')
+  }
+
+  function deleteSelectedItems() {
+    const selectedIds = new Set(selectedItems.map((item) => item.id))
+    const nextSequence = pageSequence.filter((item) => !selectedIds.has(item.id))
+    if (nextSequence.length === 0) {
+      void onCommitSequence(nextSequence, 'Selected pages deleted.')
+      return
+    }
+    const fallback = nextSequence[Math.min(activeVisualIndex, Math.max(0, nextSequence.length - 1))]
+    setPageSequence(nextSequence)
+    setActiveItemId(fallback.id)
+    setSelectedItemIds(new Set([fallback.id]))
+    void onCommitSequence(nextSequence, 'Selected pages deleted.')
+  }
+
+  function rotateSelectedItems(rotationDegrees: 90 | -90 | 180) {
+    const selectedPdfIds = new Set(selectedPdfItems.map((item) => item.id))
+    const itemsToRotate = selectedPdfIds.size ? selectedPdfIds : activeItem?.kind === 'pdf' ? new Set([activeItem.id]) : new Set<string>()
+    if (itemsToRotate.size === 0) return
+    const nextSequence = pageSequence.map((item) => (
+      item.kind === 'pdf' && itemsToRotate.has(item.id)
+        ? { ...item, rotationDegrees }
+        : item
+    ))
+    void onCommitSequence(nextSequence, 'Selected pages rotated.')
+  }
+
+  function rotateAllItems(rotationDegrees: 90 | -90 | 180) {
+    const nextSequence = pageSequence.map((item) => (
+      item.kind === 'pdf' ? { ...item, rotationDegrees } : item
+    ))
+    void onCommitSequence(nextSequence, 'All pages rotated.')
+  }
+
+  function extractSelectedItems() {
+    if (!selectedItems.length) return
+    const selectedIndexes = selectedItems.map((item) => pageSequence.findIndex((entry) => entry.id === item.id)).filter((index) => index >= 0)
+    const visualStart = Math.min(...selectedIndexes) + 1
+    const visualEnd = Math.max(...selectedIndexes) + 1
+    void onExtractPages(selectedItems, visualStart, visualEnd)
+  }
+
+  function handleDrop(targetItemId: string) {
+    if (!draggedItemId || draggedItemId === targetItemId) return
+    const draggedItem = pageSequence.find((item) => item.id === draggedItemId)
+    if (!draggedItem) return
+    const withoutDragged = pageSequence.filter((item) => item.id !== draggedItemId)
+    const targetIndex = withoutDragged.findIndex((item) => item.id === targetItemId)
+    if (targetIndex < 0) return
+    const nextSequence = [...withoutDragged.slice(0, targetIndex), draggedItem, ...withoutDragged.slice(targetIndex)]
+    setPageSequence(nextSequence)
+    setDraggedItemId(null)
+    void onCommitSequence(nextSequence, 'Pages reordered.')
   }
 
   function openAction(mode: 'insert' | 'edit' | 'delete' | 'rotate') {
@@ -4615,7 +4792,7 @@ function PageEditPanel({
           <div>
             <span className="mobile-page-editor-kicker">Selected</span>
             <strong>{selectedLabel}</strong>
-            <small>{selectedDeleted ? 'Marked deleted' : `${selectedRotation}° rotation`}</small>
+            <small>{selectedItems.length > 1 ? `${selectedItems.length} selected` : activeItem?.kind === 'blank' ? 'Blank' : 'PDF page'}</small>
           </div>
           <div className="mobile-page-editor-mode-tabs" role="tablist" aria-label="Page edit actions">
             {PAGE_EDIT_TABS.map((tab) => (
@@ -4625,17 +4802,17 @@ function PageEditPanel({
                 type="button"
                 onClick={() => {
                   if (tab.key === 'insert') {
-                    onInsertPage(selectedPage)
+                    insertBlankPageAfterActive()
                     openAction(tab.key)
                     return
                   }
                   if (tab.key === 'delete') {
-                    runForSelectedPages(onDeletePage)
+                    deleteSelectedItems()
                     openAction(tab.key)
                     return
                   }
                   if (tab.key === 'edit') {
-                    runForSelectedPages(onExtractPage)
+                    extractSelectedItems()
                     openAction(tab.key)
                     return
                   }
@@ -4652,30 +4829,40 @@ function PageEditPanel({
           </div>
         </div>
         <div className="mobile-page-editor-pages" aria-label="Pages">
-          {Array.from({ length: pageCount }, (_, index) => {
-            const pageNumber = index + 1
-            const isDeleted = deletedPages.has(pageNumber)
+          {pageSequence.map((item, index) => {
+            const visualPageNumber = index + 1
             return (
               <button
-                key={pageNumber}
-                className={`mobile-page-card${selectedPages.has(pageNumber) ? ' is-active' : ''}${isDeleted ? ' is-deleted' : ''}`}
+                key={item.id}
+                className={`mobile-page-card${selectedItemIds.has(item.id) ? ' is-active' : ''}`}
                 type="button"
-                onClick={() => selectSinglePage(pageNumber)}
-                onDoubleClick={() => onGoToPage(pageNumber)}
+                draggable
+                onClick={(event) => selectItem(item, event)}
+                onDoubleClick={() => {
+                  if (item.kind === 'pdf') onGoToPage(item.pageIndex + 1)
+                  else onBlankPageOpen()
+                }}
+                onDragStart={() => setDraggedItemId(item.id)}
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={(event) => {
+                  event.preventDefault()
+                  handleDrop(item.id)
+                }}
               >
                 <span className="page-editor-thumb">
-                  {!isDeleted ? (
+                  {item.kind === 'pdf' ? (
                     <PageEditorThumbnail
                       document={pdfDocument}
-                      pageNumber={pageNumber}
-                      rotation={rotations[pageNumber] ?? 0}
+                      pageNumber={item.pageIndex + 1}
+                      rotation={0}
                     />
                   ) : (
                     <span className="page-editor-blank-thumb" />
                   )}
                   <em className="page-editor-check" aria-hidden="true" />
                 </span>
-                <strong>{pageNumber}</strong>
+                <strong>{visualPageNumber}</strong>
+                {item.kind === 'blank' ? <small>Blank</small> : null}
               </button>
             )
           })}
@@ -4684,13 +4871,13 @@ function PageEditPanel({
           <section className={`mobile-page-editor-section${sectionClosing ? ' is-fading-out' : ''}`}>
             <h4>Rotate Pages</h4>
             <div className="mobile-page-editor-actions">
-              <button type="button" onClick={() => runForSelectedPages((pageNumber) => onRotateCurrent(90, pageNumber))}>Rotate 90° Clockwise</button>
-              <button type="button" onClick={() => runForSelectedPages((pageNumber) => onRotateCurrent(-90, pageNumber))}>Rotate 90° Anticlockwise</button>
-              <button type="button" onClick={() => runForSelectedPages((pageNumber) => onRotateCurrent(180, pageNumber))}>Rotate 180° Clockwise</button>
-              <button type="button" onClick={() => onRotateAll(90)}>Apply to All Pages (90° CW)</button>
+              <button type="button" onClick={() => rotateSelectedItems(90)}>Rotate 90° Clockwise</button>
+              <button type="button" onClick={() => rotateSelectedItems(-90)}>Rotate 90° Anticlockwise</button>
+              <button type="button" onClick={() => rotateSelectedItems(180)}>Rotate 180° Clockwise</button>
+              <button type="button" onClick={() => rotateAllItems(90)}>Apply to All Pages (90° CW)</button>
             </div>
             <p className="mobile-settings-hint">
-              {selectedPageNumbers.length > 1 ? `${selectedPageNumbers.length} selected pages` : `Selected page ${selectedPage}: ${selectedRotation}°`}
+              {selectedItems.length > 1 ? `${selectedItems.length} selected pages` : `Selected page ${activeVisualIndex + 1}`}
             </p>
           </section>
         ) : null}

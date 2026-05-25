@@ -32,6 +32,26 @@ export function viewerGridTemplateColumns(splitRatio: number, layoutMode: Viewer
   return `112px minmax(28px, ${ratio}fr) 10px minmax(28px, ${1 - ratio}fr)`
 }
 
+export function splitRatioFromPointer({
+  clientX,
+  clientY,
+  rect,
+  arrangement,
+  leftHandLayout
+}: {
+  clientX: number
+  clientY?: number
+  rect: Pick<DOMRect, 'left' | 'top' | 'width' | 'height'>
+  arrangement: 'horizontal' | 'vertical'
+  leftHandLayout: boolean
+}) {
+  const rawRatio =
+    arrangement === 'vertical'
+      ? ((clientY ?? rect.top + rect.height * resetSplitRatio()) - rect.top) / Math.max(1, rect.height)
+      : (clientX - rect.left) / Math.max(1, rect.width)
+  return clampSplitRatio(arrangement === 'horizontal' && leftHandLayout ? 1 - rawRatio : rawRatio)
+}
+
 export function commitViewerStatePatch(
   workspace: MobileWorkspaceState,
   documentId: string,

@@ -5096,29 +5096,34 @@ body.is-selecting-pdf-text .page-anchor-indicator-right {
   line-height: 1.35;
 }
 
-.mobile-viewer-body.is-left-hand-layout .mobile-pdf-pane {
-  grid-column: 4;
-}
-
-.mobile-viewer-body.is-left-hand-layout .mobile-pane-divider {
-  grid-column: 3;
-}
-
-.mobile-viewer-body.is-left-hand-layout .mobile-workspace-pane {
-  grid-column: 2;
-}
-
-.mobile-viewer-body.is-left-hand-layout .mobile-viewer-side-panel {
+.mobile-viewer-body.is-left-hand-layout.is-workspace-beside .mobile-viewer-side-panel {
   grid-column: 1;
+  grid-row: 1;
+}
+
+.mobile-viewer-body.is-left-hand-layout.is-workspace-beside .mobile-workspace-pane {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.mobile-viewer-body.is-left-hand-layout.is-workspace-beside .mobile-pane-divider {
+  grid-column: 3;
+  grid-row: 1;
+}
+
+.mobile-viewer-body.is-left-hand-layout.is-workspace-beside .mobile-pdf-pane {
+  grid-column: 4;
+  grid-row: 1;
 }
 
 @media (max-width: 600px) {
 
-  .mobile-viewer-body.is-left-hand-layout .mobile-pdf-pane,
-  .mobile-viewer-body.is-left-hand-layout .mobile-pane-divider,
-  .mobile-viewer-body.is-left-hand-layout .mobile-workspace-pane,
-  .mobile-viewer-body.is-left-hand-layout .mobile-viewer-side-panel {
+  .mobile-viewer-body.is-left-hand-layout.is-workspace-beside .mobile-pdf-pane,
+  .mobile-viewer-body.is-left-hand-layout.is-workspace-beside .mobile-pane-divider,
+  .mobile-viewer-body.is-left-hand-layout.is-workspace-beside .mobile-workspace-pane,
+  .mobile-viewer-body.is-left-hand-layout.is-workspace-beside .mobile-viewer-side-panel {
     grid-column: auto;
+    grid-row: auto;
   }
 }
 
@@ -5143,10 +5148,24 @@ body.is-selecting-pdf-text .page-anchor-indicator-right {
   grid-row: 3;
 }
 
-.mobile-viewer-body.is-workspace-below.is-left-hand-layout .mobile-pdf-pane,
-.mobile-viewer-body.is-workspace-below.is-left-hand-layout .mobile-pane-divider,
-.mobile-viewer-body.is-workspace-below.is-left-hand-layout .mobile-workspace-pane {
+.mobile-viewer-body.is-left-hand-layout.is-workspace-below .mobile-viewer-side-panel {
+  grid-column: 1;
+  grid-row: 1 / 4;
+}
+
+.mobile-viewer-body.is-left-hand-layout.is-workspace-below .mobile-pdf-pane {
   grid-column: 2;
+  grid-row: 1;
+}
+
+.mobile-viewer-body.is-left-hand-layout.is-workspace-below .mobile-pane-divider {
+  grid-column: 2;
+  grid-row: 2;
+}
+
+.mobile-viewer-body.is-left-hand-layout.is-workspace-below .mobile-workspace-pane {
+  grid-column: 2;
+  grid-row: 3;
 }
 
 .mobile-workspace-pane {
@@ -9005,6 +9024,7 @@ body:has(.mobile-modal-backdrop:has(.lt-tag-manager-content)) .mobile-modal-back
 body:has(.mobile-modal-backdrop) .mobile-viewer-commandbar {
   pointer-events: none !important;
 }
+
 /* Viewer overlay stacking fixes: keep left popup panels above the common nav/command bar. */
 body:has(.mobile-left-popup-backdrop) .mobile-viewer-commandbar {
   z-index: 80 !important;
@@ -9018,6 +9038,7 @@ body:has(.mobile-left-popup-backdrop) .mobile-left-popup-backdrop {
 body:has(.mobile-left-popup-backdrop) .mobile-left-popup {
   z-index: 9991 !important;
 }
+
 /* Compact LiquidText settings panel (approx 50% smaller) */
 /* Compact LiquidText settings panel (approx 50% smaller) */
 .lt-settings-panel {
@@ -9086,4 +9107,32 @@ body:has(.mobile-left-popup-backdrop) .mobile-left-popup {
 .lt-settings-section:last-child {
   margin-bottom: 0;
   padding-bottom: 8px;
+}
+
+/* === FIX: Page Editor Modal – Thumbnails cut off at bottom === */
+/* Ensure the thumbnail grid can scroll vertically */
+.page-editor-modal-shell .mobile-page-editor-pages {
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  max-height: 100% !important;
+  padding-bottom: 24px !important;
+  /* extra space at bottom */
+}
+
+/* Let the grid row shrink so overflow works properly */
+.page-editor-modal-shell .mobile-page-editor-content {
+  min-height: 0 !important;
+  grid-template-rows: auto minmax(0, 1fr) auto !important;
+}
+
+/* Keep the modal body from clipping its children */
+.page-editor-modal-shell .mobile-modal-body {
+  overflow: hidden !important;
+  /* outer stays hidden, inner scrolls */
+}
+
+/* (Optional) Raise the modal’s maximum height to show more rows */
+.page-editor-modal-shell {
+  max-height: 85vh !important;
+  height: auto !important;
 }
