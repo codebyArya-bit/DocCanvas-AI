@@ -9,7 +9,7 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx app/api/browser/_lib.test.ts && tsx src/lib/mobile-ink.test.ts && tsx src/lib/interaction-engine.test.ts && tsx src/components/WebpageImportPanel.test.ts && tsx src/components/MobileWorkspaceCanvas.test.ts && tsx src/components/pdf/DocumentViewer.test.ts && tsx src/components/pdf/SelectionManager.test.ts && tsx src/components/workspace/WorkspaceSelectionToolbar.test.ts"
+    "test": "tsx app/api/browser/_lib.test.ts && tsx src/lib/mobile-ink.test.ts && tsx src/lib/interaction-engine.test.ts && tsx src/lib/dmap-project.test.ts && tsx src/components/WebpageImportPanel.test.ts && tsx src/components/MobileWorkspaceCanvas.test.ts && tsx src/components/pdf/DocumentViewer.test.ts && tsx src/components/pdf/SelectionManager.test.ts && tsx src/components/workspace/WorkspaceSelectionToolbar.test.ts"
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",

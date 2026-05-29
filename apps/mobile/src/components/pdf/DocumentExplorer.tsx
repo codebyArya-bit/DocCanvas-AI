@@ -1,6 +1,7 @@
 'use client'
 
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { useEffect, useMemo, useState } from 'react'
 import {
   buildChecksum,
@@ -8,14 +9,17 @@ import {
   deleteMobileDocuments,
   listMobileDocuments,
   saveMobileDocument,
+  saveMobileWorkspace,
   type MobileDocumentRecord
 } from '../../lib/mobile-store'
+import { buildImportedDmapProject, parseDmapProjectBundle } from '../../lib/dmap-project'
 import { destroyPdfTask, openPdfDocument, type PdfLoadingTaskLike } from '../../lib/pdf-loader'
 import { WebpageImportPanel } from '../WebpageImportPanel'
 
 type ExplorerView = 'documents' | 'website' | 'cloud' | 'settings'
 
 export function DocumentExplorer() {
+  const router = useRouter()
   const [documents, setDocuments] = useState<MobileDocumentRecord[]>([])
   const [status, setStatus] = useState('Ready')
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
@@ -73,6 +77,37 @@ export function DocumentExplorer() {
     }
   }
 
+  async function importDmap(file: File) {
+    setIsImporting(true)
+    setStatus(`Importing ${file.name}...`)
+    let openedTask: PdfLoadingTaskLike | null = null
+    try {
+      const parsed = await parseDmapProjectBundle(new Uint8Array(await file.arrayBuffer()))
+      const imported = await buildImportedDmapProject(parsed, { fileName: file.name })
+      const opened = await openPdfDocument(imported.record.bytes ?? parsed.pdfBytes)
+      openedTask = opened.task
+      const record = {
+        ...imported.record,
+        document: {
+          ...imported.record.document,
+          pageCount: opened.document.numPages
+        }
+      }
+      await saveMobileDocument(record)
+      await saveMobileWorkspace(imported.workspace)
+      await destroyPdfTask(openedTask)
+      openedTask = null
+      await refreshDocuments()
+      setStatus(`${record.document.title} restored from .dmap.`)
+      router.push(`/viewer/${record.document.id}`)
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Could not import .dmap project.')
+    } finally {
+      await destroyPdfTask(openedTask)
+      setIsImporting(false)
+    }
+  }
+
   async function deleteSelected() {
     const ids = Array.from(selectedIds)
     if (!ids.length) return
@@ -124,6 +159,21 @@ export function DocumentExplorer() {
               <button className="mobile-danger-button" type="button" onClick={() => void deleteSelected()}>
                 Delete {selectedCount}
               </button>
+            ) : null}
+            {activeView !== 'website' ? (
+              <label className={isImporting ? 'mobile-secondary-button mobile-file-import-button is-disabled' : 'mobile-secondary-button mobile-file-import-button'}>
+                Import .dmap
+                <input
+                  type="file"
+                  accept=".dmap,application/zip,application/octet-stream"
+                  disabled={isImporting}
+                  onChange={(event) => {
+                    const file = event.target.files?.[0]
+                    event.target.value = ''
+                    if (file) void importDmap(file)
+                  }}
+                />
+              </label>
             ) : null}
             {activeView !== 'website' ? (
               <label className={isImporting ? 'mobile-primary-button mobile-file-import-button is-disabled' : 'mobile-primary-button mobile-file-import-button'}>

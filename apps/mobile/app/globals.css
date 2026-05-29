@@ -3085,6 +3085,11 @@ button.mobile-left-popup-item,
   transition: stroke-opacity 150ms ease, stroke-width 150ms ease;
 }
 
+.mobile-workspace-link-layer .workspace-node-link-preview {
+  stroke-dasharray: 8 5;
+  pointer-events: none;
+}
+
 .mobile-canvas-node.workspace-textbox-node {
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(246, 249, 255, 0.96));
   border-radius: 18px;
@@ -9135,4 +9140,397 @@ body:has(.mobile-left-popup-backdrop) .mobile-left-popup {
 .page-editor-modal-shell {
   max-height: 85vh !important;
   height: auto !important;
+}
+
+/* Compact PDF Viewer Header */
+.mobile-viewer-titlebar {
+  padding: 8px 12px !important;
+  gap: 8px !important;
+}
+
+.mobile-viewer-titlebar div p {
+  font-size: 10px !important;
+  margin-bottom: 2px !important;
+}
+
+.mobile-viewer-titlebar h1 {
+  font-size: 18px !important;
+  line-height: 1.2 !important;
+  white-space: nowrap !important;
+}
+
+/* Hide the loaded status span – it duplicates the document name */
+.mobile-viewer-titlebar > span {
+  display: none !important;
+}
+
+/* Compact Command Bar */
+.mobile-viewer-commandbar {
+  padding: 6px 10px !important;
+  gap: 6px !important;
+}
+
+.mobile-viewer-commandbar .mobile-tool-button,
+.mobile-viewer-commandbar .mobile-primary-button,
+.mobile-viewer-commandbar .mobile-back-link {
+  min-height: 30px !important;
+  padding: 0 8px !important;
+  font-size: 12px !important;
+}
+
+.mobile-viewer-commandbar .mobile-command-tool {
+  width: 28px !important;
+  height: 28px !important;
+}
+
+.mobile-viewer-commandbar .mobile-command-ink-settings {
+  padding: 2px 5px !important;
+}
+
+.mobile-viewer-commandbar .mobile-command-ink-colors button {
+  width: 18px !important;
+  height: 18px !important;
+}
+
+.mobile-viewer-commandbar .mobile-command-ink-size {
+  min-width: 70px !important;
+  font-size: 10px !important;
+}
+
+.mobile-viewer-commandbar .mobile-command-ink-size input {
+  width: 50px !important;
+}
+
+/* Compact Source Zoom Controls (PDF view) */
+.mobile-source-zoom-controls {
+  padding: 2px 4px !important;
+  gap: 2px !important;
+  top: 4px !important;
+  right: 4px !important;
+}
+
+.mobile-source-zoom-controls .mobile-tool-button {
+  min-height: 26px !important;
+  min-width: 26px !important;
+  padding: 0 !important;
+  font-size: 14px !important;
+}
+
+.mobile-source-zoom-controls span {
+  font-size: 11px !important;
+  min-width: 32px !important;
+}
+
+/* Compact Canvas Zoom Level (Workspace view) */
+.mobile-canvas-zoom-level {
+  padding: 4px 6px !important;
+  gap: 4px !important;
+  min-height: 32px !important;
+  top: 8px !important;
+  left: 8px !important;
+}
+
+.mobile-canvas-zoom-level button {
+  min-height: 24px !important;
+  min-width: 24px !important;
+  padding: 0 6px !important;
+  font-size: 13px !important;
+}
+
+.mobile-canvas-zoom-level span {
+  font-size: 11px !important;
+  min-width: 36px !important;
+}
+
+
+/* =========================================================
+   Compact Workspace Nodes (Preserve Resize Handles)
+   ========================================================= */
+
+/* Reduce node padding and overall size */
+.mobile-canvas-node.workspace-node,
+.shared-textbox-card {
+  padding: 6px 8px !important;
+  min-height: 64px !important;
+  border-radius: 12px !important;
+}
+
+/* Compact handle bar (drag area) */
+.mobile-node-handle,
+.workspace-excerpt-handle,
+.workspace-comment-handle,
+.workspace-textbox-handle,
+.shared-textbox-handle {
+  min-height: 26px !important;
+  padding: 4px 6px !important;
+  margin: -6px -6px 6px -6px !important;
+  font-size: 10px !important;
+  gap: 6px !important;
+  border-radius: 8px !important;
+}
+
+/* Handle button (Delete) */
+.mobile-node-handle button,
+.shared-textbox-handle button {
+  min-height: 20px !important;
+  padding: 0 5px !important;
+  font-size: 9px !important;
+}
+
+/* Content area – excerpt, comment, text */
+.workspace-node-copy,
+.workspace-comment-input,
+textarea.workspace-node-copy,
+.shared-textbox-editor {
+  min-height: 40px !important;
+  padding: 4px 4px !important;
+  font-size: 11px !important;
+  line-height: 1.3 !important;
+}
+
+/* Anchor arrow (jump to source) – keep functional, slightly smaller */
+.workspace-node-anchor-arrow {
+  left: -8px !important;
+  border-top-width: 8px !important;
+  border-bottom-width: 8px !important;
+  border-right-width: 8px !important;
+}
+
+/* Small link handle circle – keep visible */
+.workspace-node-link-handle {
+  width: 10px !important;
+  height: 10px !important;
+  top: 6px !important;
+  right: 6px !important;
+}
+
+/* Tags row (if any) */
+.workspace-node-tags {
+  gap: 4px !important;
+  margin-top: 4px !important;
+}
+.workspace-node-tag {
+  padding: 2px 5px !important;
+  font-size: 8px !important;
+}
+
+/* =========================================================
+   Further Compact the PDF Viewer Title Bar
+   ========================================================= */
+.mobile-viewer-titlebar {
+  padding: 6px 10px !important;
+  gap: 6px !important;
+}
+.mobile-viewer-titlebar div p {
+  font-size: 9px !important;
+  margin-bottom: 1px !important;
+}
+.mobile-viewer-titlebar h1 {
+  font-size: 16px !important;
+  line-height: 1.2 !important;
+}
+
+/* =========================================================
+   Compact Workspace Text Toolbar (floating node toolbar)
+   ========================================================= */
+.workspace-text-toolbar,
+.mobile-node-toolbar.workspace-textbox-toolbar,
+.note-toolbar.workspace-textbox-toolbar {
+  min-height: 36px !important;
+  padding: 4px 8px !important;
+  gap: 6px !important;
+  border-radius: 12px !important;
+}
+
+.workspace-text-toolbar .workspace-text-toolbar-actions,
+.workspace-text-toolbar .workspace-text-toolbar-tools,
+.mobile-node-toolbar .workspace-text-toolbar-actions,
+.mobile-node-toolbar .workspace-text-toolbar-tools {
+  gap: 4px !important;
+}
+
+.workspace-text-toolbar button,
+.mobile-node-toolbar button,
+.note-toolbar button {
+  min-height: 24px !important;
+  padding: 0 6px !important;
+  font-size: 11px !important;
+  border-radius: 6px !important;
+}
+
+/* Tag input inside toolbar */
+.workspace-text-toolbar-tag-wrap {
+  gap: 4px !important;
+}
+.workspace-text-toolbar-tag-wrap input {
+  width: 64px !important;
+  min-height: 22px !important;
+  font-size: 10px !important;
+  padding: 0 4px !important;
+}
+
+/* Color swatches in toolbar */
+.workspace-text-toolbar-swatch {
+  width: 18px !important;
+  height: 18px !important;
+  min-height: 18px !important;
+}
+
+/* Icon button (Tt, /) */
+.workspace-text-toolbar-icon {
+  min-width: 22px !important;
+  font-size: 16px !important;
+  line-height: 1 !important;
+}
+
+/* Status text (if any) */
+.mobile-toolbar-status {
+  font-size: 9px !important;
+  padding: 0 4px !important;
+}
+
+/* Ensure the popover (when clicking Tt) stays usable */
+.workspace-text-toolbar-popover {
+  top: calc(100% + 6px) !important;
+  padding: 8px !important;
+  gap: 8px !important;
+}
+.workspace-text-toolbar-popover label {
+  font-size: 10px !important;
+  gap: 4px !important;
+}
+.workspace-text-toolbar-popover select,
+.workspace-text-toolbar-popover button {
+  min-height: 28px !important;
+  font-size: 10px !important;
+  padding: 0 6px !important;
+}
+.workspace-text-toolbar-formatting {
+  gap: 6px !important;
+}
+.workspace-text-toolbar-size {
+  gap: 6px !important;
+}
+.workspace-text-toolbar-size span {
+  font-size: 11px !important;
+}
+/* =========================================================
+   Further Compact the PDF Viewer Title Bar
+   ========================================================= */
+.mobile-viewer-titlebar {
+  padding: 6px 10px !important;
+  gap: 6px !important;
+}
+.mobile-viewer-titlebar div p {
+  font-size: 9px !important;
+  margin-bottom: 1px !important;
+}
+.mobile-viewer-titlebar h1 {
+  font-size: 16px !important;
+  line-height: 1.2 !important;
+}
+
+/* =========================================================
+   Compact Workspace Text Toolbar (floating node toolbar)
+   ========================================================= */
+.workspace-text-toolbar,
+.mobile-node-toolbar.workspace-textbox-toolbar,
+.note-toolbar.workspace-textbox-toolbar {
+  min-height: 36px !important;
+  padding: 4px 8px !important;
+  gap: 6px !important;
+  border-radius: 12px !important;
+}
+
+.workspace-text-toolbar .workspace-text-toolbar-actions,
+.workspace-text-toolbar .workspace-text-toolbar-tools,
+.mobile-node-toolbar .workspace-text-toolbar-actions,
+.mobile-node-toolbar .workspace-text-toolbar-tools {
+  gap: 4px !important;
+}
+
+.workspace-text-toolbar button,
+.mobile-node-toolbar button,
+.note-toolbar button {
+  min-height: 24px !important;
+  padding: 0 6px !important;
+  font-size: 11px !important;
+  border-radius: 6px !important;
+}
+
+/* Tag input inside toolbar */
+.workspace-text-toolbar-tag-wrap {
+  gap: 4px !important;
+}
+.workspace-text-toolbar-tag-wrap input {
+  width: 64px !important;
+  min-height: 22px !important;
+  font-size: 10px !important;
+  padding: 0 4px !important;
+}
+
+/* Color swatches in toolbar */
+.workspace-text-toolbar-swatch {
+  width: 18px !important;
+  height: 18px !important;
+  min-height: 18px !important;
+}
+
+/* Icon button (Tt, /) */
+.workspace-text-toolbar-icon {
+  min-width: 22px !important;
+  font-size: 16px !important;
+  line-height: 1 !important;
+}
+
+/* Status text (if any) */
+.mobile-toolbar-status {
+  font-size: 9px !important;
+  padding: 0 4px !important;
+}
+
+/* Ensure the popover (when clicking Tt) stays usable */
+.workspace-text-toolbar-popover {
+  top: calc(100% + 6px) !important;
+  padding: 8px !important;
+  gap: 8px !important;
+}
+.workspace-text-toolbar-popover label {
+  font-size: 10px !important;
+  gap: 4px !important;
+}
+.workspace-text-toolbar-popover select,
+.workspace-text-toolbar-popover button {
+  min-height: 28px !important;
+  font-size: 10px !important;
+  padding: 0 6px !important;
+}
+.workspace-text-toolbar-formatting {
+  gap: 6px !important;
+}
+.workspace-text-toolbar-size {
+  gap: 6px !important;
+}
+.workspace-text-toolbar-size span {
+  font-size: 11px !important;
+}
+
+/* Compact settings close button */
+.lt-settings-close {
+  width: 28px !important;
+  height: 28px !important;
+  font-size: 20px !important;
+  line-height: 1 !important;
+  border-radius: 4px !important;
+  background: rgba(73, 105, 130, 0.18) !important;
+  color: #111827 !important;
+  cursor: pointer !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+
+/* Optional: Adjust the project header layout to match */
+.lt-settings-project {
+  gap: 8px !important;
 }

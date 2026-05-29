@@ -3,6 +3,7 @@ import {
   buildLinkedCommentNodeAndEdge,
   buildWorkspaceNodeLinkText,
   findFirstAvailableWorkspacePosition,
+  resizeWorkspaceNodeBounds,
   parseWorkspaceToolbarTags
 } from './MobileWorkspaceCanvas'
 import type { CanvasNode } from '@workspace/domain'
@@ -60,6 +61,52 @@ const position = findFirstAvailableWorkspacePosition(
 )
 assert.deepEqual(position, { x: -228, y: 120, width: 300, height: 156 })
 
+assert.deepEqual(
+  resizeWorkspaceNodeBounds({
+    direction: 'bottom-right',
+    startX: 0,
+    startY: 0,
+    clientX: 60,
+    clientY: 40,
+    nodeX: 100,
+    nodeY: 120,
+    width: 280,
+    height: 140,
+    workspaceZoom: 2
+  }),
+  { x: 100, y: 120, width: 310, height: 160 }
+)
+assert.deepEqual(
+  resizeWorkspaceNodeBounds({
+    direction: 'top-left',
+    startX: 0,
+    startY: 0,
+    clientX: 40,
+    clientY: 20,
+    nodeX: 100,
+    nodeY: 120,
+    width: 280,
+    height: 140,
+    workspaceZoom: 1
+  }),
+  { x: 140, y: 140, width: 240, height: 120 }
+)
+assert.deepEqual(
+  resizeWorkspaceNodeBounds({
+    direction: 'left',
+    startX: 0,
+    startY: 0,
+    clientX: 200,
+    clientY: 0,
+    nodeX: 100,
+    nodeY: 120,
+    width: 280,
+    height: 140,
+    workspaceZoom: 1
+  }),
+  { x: 200, y: 120, width: 180, height: 140 }
+)
+
 const canvasSource = readFileSync(new URL('./MobileWorkspaceCanvas.tsx', import.meta.url), 'utf8')
 assert.match(canvasSource, /const MIN_NODE_POSITION = -INFINITE_CANVAS_PADDING/)
 assert.match(canvasSource, /const INFINITE_CANVAS_PADDING = 12000/)
@@ -109,6 +156,22 @@ assert.match(canvasSource, /onCreateNode\('text'\)/)
 assert.match(canvasSource, /Math\.max\(MIN_NODE_POSITION, dragging\.nodeX/)
 assert.match(canvasSource, /Math\.max\(MIN_NODE_POSITION, x\)/)
 assert.match(canvasSource, /onFocus=\{\(\) => \{\s*onActiveNodeChange\(node\.id\)\s*setToolbarNodeId\(node\.id\)/s)
+assert.match(canvasSource, /function handleNodePointerDown\(/)
+assert.match(canvasSource, /if \(linkingFrom\) commitLink\(node\.id\)/)
+assert.match(canvasSource, /onPointerDown=\{\(event\) => handleNodePointerDown\(event, node\)\}/)
+assert.match(canvasSource, /onPointerDown=\{\(event\) => \{\s*handleNodePointerDown\(event, node\)/s)
+assert.match(canvasSource, /if \(linkingFrom\) \{\s*commitLink\(node\.id\)\s*return\s*\}/s)
+assert.match(canvasSource, /const x1 = from\.x \+ from\.width\s*const y1 = from\.y\s*const x2 = to\.x \+ to\.width\s*const y2 = to\.y/s)
+assert.doesNotMatch(canvasSource, /const x2 = to\.x\s*const y2 = to\.y \+ Math\.min\(to\.height \/ 2, 48\)/)
+assert.match(canvasSource, /const \[linkPreviewPoint, setLinkPreviewPoint\] = useState<\{ x: number; y: number \} \| null>\(null\)/)
+assert.match(canvasSource, /function updateLinkPreviewPoint\(clientX: number, clientY: number\)/)
+assert.match(canvasSource, /if \(linkingFrom && !dragging\) \{\s*updateLinkPreviewPoint\(event\.clientX, event\.clientY\)\s*return\s*\}/s)
+assert.match(canvasSource, /const previewFrom = linkingFrom \? documentNodes\.find\(\(node\) => node\.id === linkingFrom\) : null/)
+assert.match(canvasSource, /className="workspace-node-link-visible workspace-node-link-preview"/)
+assert.match(canvasSource, /setLinkPreviewPoint\(null\)/)
+assert.match(canvasSource, /resizeWorkspaceNodeBounds\(\{/)
+assert.match(canvasSource, /const resizeDirections: NodeResizeDirection\[\] = \['top', 'bottom', 'left', 'right', 'top-left', 'top-right', 'bottom-left', 'bottom-right'\]/)
+assert.match(canvasSource, /className=\{`workspace-node-resize-handle workspace-node-resize-\$\{direction\}`\}/)
 assert.match(canvasSource, /function MobileCommentEditor/)
 const mobileCommentEditorSource = canvasSource.slice(
   canvasSource.indexOf('function MobileCommentEditor'),

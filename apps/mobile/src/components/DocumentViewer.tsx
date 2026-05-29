@@ -16,6 +16,7 @@ import {
   dispatchInteractionAction,
   normalizePointer
 } from '../lib/interaction-engine'
+import { buildDmapFileName, createDmapProjectBundle } from '../lib/dmap-project'
 import { drawInkCurve, getCoalescedPointerEvents, getPredictedInkPoint, smoothInkPath } from '../lib/mobile-ink'
 import {
   getDocumentSourceKind,
@@ -53,8 +54,6 @@ import {
   buildFreeNode,
   buildPageAnchor,
   buildPrintableRows,
-  buildProjectBundle,
-  buildProjectBundleFileName,
   buildSemanticSearchIndex,
   clampSplitRatio,
   clampViewerZoom,
@@ -1563,16 +1562,21 @@ export function DocumentViewer({ docId }: { docId: string }) {
     })
   }
 
-  function exportProjectBundle() {
+  async function exportProjectBundle() {
     if (!record || !workspace) return
-    const bundle = buildProjectBundle(record, documents, workspace)
-    const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = buildProjectBundleFileName(record.document.title)
-    link.click()
-    URL.revokeObjectURL(url)
+    try {
+      const bundle = await createDmapProjectBundle(record, workspace)
+      const blob = new Blob([bundle], { type: 'application/vnd.documind.project' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = buildDmapFileName(record.document.title)
+      link.click()
+      URL.revokeObjectURL(url)
+      setStatus('.dmap project exported.')
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Could not export .dmap project.')
+    }
   }
 
   function exportPrintablePdf() {
@@ -2578,8 +2582,8 @@ function LeftDrawer({
 
           {mode === 'share' ? (
             <div className="mobile-left-popup-actions is-column">
-              <button className="mobile-primary-button" type="button" onClick={onExportBundle}>Export Project Bundle</button>
-              <p>Downloads a JSON project bundle with document and workspace data.</p>
+              <button className="mobile-primary-button" type="button" onClick={onExportBundle}>Export .dmap Backup</button>
+              <p>Downloads a portable project backup with the PDF, annotations, workspace, and settings.</p>
               <button className="mobile-secondary-button" type="button" onClick={onExportPrintable}>Printable Export</button>
               <p>Opens a printable view of excerpts, notes, and source marks.</p>
             </div>

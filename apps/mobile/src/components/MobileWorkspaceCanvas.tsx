@@ -70,6 +70,19 @@ type NodeResizeDirection =
   | 'bottom-left'
   | 'bottom-right'
 
+type WorkspaceNodeResizeInput = {
+  direction: NodeResizeDirection
+  startX: number
+  startY: number
+  clientX: number
+  clientY: number
+  nodeX: number
+  nodeY: number
+  width: number
+  height: number
+  workspaceZoom: number
+}
+
 const INFINITE_CANVAS_PADDING = 12000
 const MIN_NODE_POSITION = -INFINITE_CANVAS_PADDING
 
@@ -116,6 +129,35 @@ export function parseWorkspaceToolbarTags(value: string) {
 
 export function buildWorkspaceNodeLinkText(node: Pick<CanvasNode, 'id' | 'sourceAnchorId'>) {
   return node.sourceAnchorId ? `anchor:${node.sourceAnchorId}` : `node:${node.id}`
+}
+
+export function resizeWorkspaceNodeBounds(input: WorkspaceNodeResizeInput) {
+  const zoom = Math.max(input.workspaceZoom, MIN_WORKSPACE_ZOOM)
+  const dx = (input.clientX - input.startX) / zoom
+  const dy = (input.clientY - input.startY) / zoom
+  const minWidth = 180
+  const minHeight = 110
+  let x = input.nodeX
+  let y = input.nodeY
+  let width = input.width
+  let height = input.height
+
+  if (input.direction.includes('right')) {
+    width = Math.max(minWidth, input.width + dx)
+  }
+  if (input.direction.includes('bottom')) {
+    height = Math.max(minHeight, input.height + dy)
+  }
+  if (input.direction.includes('left')) {
+    width = Math.max(minWidth, input.width - dx)
+    x = input.nodeX + input.width - width
+  }
+  if (input.direction.includes('top')) {
+    height = Math.max(minHeight, input.height - dy)
+    y = input.nodeY + input.height - height
+  }
+
+  return { x: Math.max(MIN_NODE_POSITION, x), y: Math.max(MIN_NODE_POSITION, y), width, height }
 }
 
 function boxesOverlap(left: Pick<CanvasNode, 'x' | 'y' | 'width' | 'height'>, right: Pick<CanvasNode, 'x' | 'y' | 'width' | 'height'>) {
@@ -211,6 +253,7 @@ export function MobileWorkspaceCanvas({
 }: MobileWorkspaceCanvasProps) {
   const [dragging, setDragging] = useState<DragState | null>(null)
   const [linkingFrom, setLinkingFrom] = useState<string | null>(null)
+  const [linkPreviewPoint, setLinkPreviewPoint] = useState<{ x: number; y: number } | null>(null)
   const [anchorLines, setAnchorLines] = useState<AnchorLinkLine[]>([])
   const [linkLayerBounds, setLinkLayerBounds] = useState<LinkLayerBounds>({ left: 0, top: 0, width: 0, height: 0 })
   const [toolbarToolsOpen, setToolbarToolsOpen] = useState(false)
@@ -486,10 +529,12 @@ export function MobileWorkspaceCanvas({
   function commitLink(toNodeId: string) {
     if (!linkingFrom || linkingFrom === toNodeId) {
       setLinkingFrom(null)
+      setLinkPreviewPoint(null)
       return
     }
     if (links.some((link) => link.fromNodeId === linkingFrom && link.toNodeId === toNodeId)) {
       setLinkingFrom(null)
+      setLinkPreviewPoint(null)
       return
     }
     onLinksChange([
@@ -503,6 +548,17 @@ export function MobileWorkspaceCanvas({
       }
     ])
     setLinkingFrom(null)
+    setLinkPreviewPoint(null)
+  }
+
+  function handleNodePointerDown(event: ReactPointerEvent<HTMLElement>, node: CanvasNode) {
+    event.stopPropagation()
+    if (linkingFrom) commitLink(node.id)
+    onActiveNodeChange(node.id)
+    const visualKind = visualNodeKind(node)
+    if (visualKind === 'excerpt' || visualKind === 'comment' || visualKind === 'textbox') {
+      setToolbarNodeId(node.id)
+    }
   }
 
   function buildBezierPath(fromX: number, fromY: number, toX: number, toY: number) {
@@ -523,6 +579,10 @@ export function MobileWorkspaceCanvas({
       x: (clientX - (rect?.left ?? 0) - viewport.panX) / viewport.workspaceZoom,
       y: (clientY - (rect?.top ?? 0) - viewport.panY) / viewport.workspaceZoom
     }
+  }
+
+  function updateLinkPreviewPoint(clientX: number, clientY: number) {
+    setLinkPreviewPoint(screenToWorld(clientX, clientY))
   }
 
   function commitWorkspaceDraft(kind: 'pen' | 'pencil' | 'freeform-highlight', points: NormalizedPoint[]) {
@@ -556,31 +616,18 @@ export function MobileWorkspaceCanvas({
   }
 
   function resizeNodePatch(dragging: Extract<DragState, { kind: 'resize' }>, clientX: number, clientY: number): Partial<CanvasNode> {
-    const dx = (clientX - dragging.startX) / viewport.workspaceZoom
-    const dy = (clientY - dragging.startY) / viewport.workspaceZoom
-    const minWidth = 180
-    const minHeight = 110
-    let x = dragging.nodeX
-    let y = dragging.nodeY
-    let width = dragging.width
-    let height = dragging.height
-
-    if (dragging.direction.includes('right')) {
-      width = Math.max(minWidth, dragging.width + dx)
-    }
-    if (dragging.direction.includes('bottom')) {
-      height = Math.max(minHeight, dragging.height + dy)
-    }
-    if (dragging.direction.includes('left')) {
-      width = Math.max(minWidth, dragging.width - dx)
-      x = dragging.nodeX + dragging.width - width
-    }
-    if (dragging.direction.includes('top')) {
-      height = Math.max(minHeight, dragging.height - dy)
-      y = dragging.nodeY + dragging.height - height
-    }
-
-    return { x: Math.max(MIN_NODE_POSITION, x), y: Math.max(MIN_NODE_POSITION, y), width, height }
+    return resizeWorkspaceNodeBounds({
+      direction: dragging.direction,
+      startX: dragging.startX,
+      startY: dragging.startY,
+      clientX,
+      clientY,
+      nodeX: dragging.nodeX,
+      nodeY: dragging.nodeY,
+      width: dragging.width,
+      height: dragging.height,
+      workspaceZoom: viewport.workspaceZoom
+    })
   }
 
   useEffect(() => {
@@ -732,6 +779,10 @@ export function MobileWorkspaceCanvas({
         setToolbarNodeId(null)
       }}
       onPointerMove={(event) => {
+        if (linkingFrom && !dragging) {
+          updateLinkPreviewPoint(event.clientX, event.clientY)
+          return
+        }
         if (!dragging || locked) return
         event.currentTarget.setPointerCapture(event.pointerId)
         if (dragging.kind === 'pan') {
@@ -969,9 +1020,9 @@ export function MobileWorkspaceCanvas({
           const to = documentNodes.find((node) => node.id === link.toNodeId)
           if (!from || !to) return null
           const x1 = from.x + from.width
-          const y1 = from.y + Math.min(from.height / 2, 48)
-          const x2 = to.x
-          const y2 = to.y + Math.min(to.height / 2, 48)
+          const y1 = from.y
+          const x2 = to.x + to.width
+          const y2 = to.y
           const path = buildBezierPath(
             x1 * viewport.workspaceZoom + viewport.panX,
             y1 * viewport.workspaceZoom + viewport.panY,
@@ -983,6 +1034,19 @@ export function MobileWorkspaceCanvas({
             <path key={link.id} d={path} className="workspace-node-link-visible" strokeWidth={active ? 3 : 2} strokeOpacity={active ? 0.9 : 0.6} />
           )
         })}
+        {(() => {
+          const previewFrom = linkingFrom ? documentNodes.find((node) => node.id === linkingFrom) : null
+          if (!previewFrom || !linkPreviewPoint) return null
+          const x1 = previewFrom.x + previewFrom.width
+          const y1 = previewFrom.y
+          const path = buildBezierPath(
+            x1 * viewport.workspaceZoom + viewport.panX,
+            y1 * viewport.workspaceZoom + viewport.panY,
+            linkPreviewPoint.x * viewport.workspaceZoom + viewport.panX,
+            linkPreviewPoint.y * viewport.workspaceZoom + viewport.panY
+          )
+          return <path d={path} className="workspace-node-link-visible workspace-node-link-preview" strokeWidth={2.5} strokeOpacity={0.72} />
+        })()}
       </svg>
       <div className="mobile-canvas-surface" style={{ transform: `translate(${viewport.panX}px, ${viewport.panY}px) scale(${viewport.workspaceZoom})` }}>
         {documentNodes.length ? (
@@ -1002,14 +1066,7 @@ export function MobileWorkspaceCanvas({
                 borderColor: accentColor,
                 background: visualKind === 'comment' ? undefined : node.nodeColor
               }}
-              onPointerDown={(event) => {
-                event.stopPropagation()
-                if (linkingFrom) commitLink(node.id)
-                onActiveNodeChange(node.id)
-                if (visualKind === 'excerpt' || visualKind === 'comment' || visualKind === 'textbox') {
-                  setToolbarNodeId(node.id)
-                }
-              }}
+              onPointerDown={(event) => handleNodePointerDown(event, node)}
             >
               {node.sourceAnchorId ? (
                 <button
@@ -1064,7 +1121,13 @@ export function MobileWorkspaceCanvas({
                 onPointerDown={(event) => {
                   event.preventDefault()
                   event.stopPropagation()
-                  if (!locked) setLinkingFrom(node.id)
+                  if (locked) return
+                  if (linkingFrom) {
+                    commitLink(node.id)
+                    return
+                  }
+                  setLinkingFrom(node.id)
+                  updateLinkPreviewPoint(event.clientX, event.clientY)
                 }}
               />
               {visualKind === 'excerpt' ? (
@@ -1072,9 +1135,7 @@ export function MobileWorkspaceCanvas({
                   className="workspace-node-copy"
                   style={styleToCss(node.textStyle)}
                   onPointerDown={(event) => {
-                    event.stopPropagation()
-                    onActiveNodeChange(node.id)
-                    setToolbarNodeId(node.id)
+                    handleNodePointerDown(event, node)
                   }}
                 >
                   {node.text}
@@ -1083,6 +1144,7 @@ export function MobileWorkspaceCanvas({
                 <MobileCommentEditor
                   text={node.text ?? ''}
                   textStyle={node.textStyle}
+                  onPointerDown={(event) => handleNodePointerDown(event, node)}
                   onActivate={() => {
                     onActiveNodeChange(node.id)
                     setToolbarNodeId(node.id)
@@ -1097,9 +1159,7 @@ export function MobileWorkspaceCanvas({
                   aria-label={node.title ?? 'Workspace note'}
                   style={styleToCss(node.textStyle)}
                   onPointerDown={(event) => {
-                    event.stopPropagation()
-                    onActiveNodeChange(node.id)
-                    setToolbarNodeId(node.id)
+                    handleNodePointerDown(event, node)
                   }}
                   onClick={(event) => {
                     event.stopPropagation()
@@ -1168,11 +1228,13 @@ export function MobileWorkspaceCanvas({
 function MobileCommentEditor({
   text,
   textStyle,
+  onPointerDown,
   onActivate,
   onTextChange
 }: {
   text: string
   textStyle?: TextStyle
+  onPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void
   onActivate: () => void
   onTextChange: (text: string) => void
 }) {
@@ -1198,7 +1260,7 @@ function MobileCommentEditor({
       dir="ltr"
       style={styleToCss(textStyle)}
       onPointerDown={(event) => {
-        event.stopPropagation()
+        onPointerDown(event)
         onActivate()
       }}
       onClick={(event) => {
